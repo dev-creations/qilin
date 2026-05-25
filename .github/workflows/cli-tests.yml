@@ -3,14 +3,13 @@ name: cli-tests
 on:
   pull_request:
     branches: [main]
-    paths:
-      - "cli/**"
-      - ".github/workflows/cli-tests.yml"
   push:
     branches: [main]
-    paths:
-      - "cli/**"
-      - ".github/workflows/cli-tests.yml"
+
+# Runs on every PR/push -- intentionally no `paths:` filter so the `go test`
+# checks can be marked Required in branch protection without leaving unrelated
+# PRs stuck on "expected -- waiting for status to be reported". Go tests are
+# <30s so the unconditional cost is negligible.
 
 concurrency:
   group: cli-tests-${{ github.ref }}
