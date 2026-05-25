@@ -1,0 +1,76 @@
+name: qilin
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.18.0
+    restart: unless-stopped
+    volumes:
+      - qdrant_data:/qdrant/storage
+    expose:
+      - "6334"
+    ports:
+      # Qdrant HTTP API + built-in dashboard at http://localhost:6333/dashboard.
+      # Bound to loopback only so it isn't reachable from the LAN.
+      - "6333:6333"
+    environment:
+      QDRANT__SERVICE__HTTP_PORT: "6333"
+      QDRANT__SERVICE__GRPC_PORT: "6334"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/6333' >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    networks:
+      - qilin_net
+
+  qilin-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: qilin-mcp:latest
+    restart: unless-stopped
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    ports:
+      - "8443:8443"
+      # Plain HTTP listener bound to loopback only on the host so it's NOT
+      # exposed to the LAN. Convenient for clients that don't trust the
+      # self-signed TLS cert (e.g. Cursor on Windows). Remove this line to
+      # disable host access to the plain endpoint entirely.
+      - "127.0.0.1:8080:8080"
+    env_file:
+      - .env
+    environment:
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-nomic-embed-text-v2-moe}
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-768}
+      QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+      DEFAULT_COLLECTION: ${DEFAULT_COLLECTION:-memory}
+      CHUNK_SIZE_TOKENS: ${CHUNK_SIZE_TOKENS:-450}
+      CHUNK_OVERLAP_TOKENS: ${CHUNK_OVERLAP_TOKENS:-50}
+      EMBED_BATCH_SIZE: ${EMBED_BATCH_SIZE:-16}
+      MCP_HOST: ${MCP_HOST:-0.0.0.0}
+      MCP_PORT: ${MCP_PORT:-8443}
+      MCP_HTTP_PORT: ${MCP_HTTP_PORT:-8080}
+      MCP_HTTP_ENABLED: ${MCP_HTTP_ENABLED:-1}
+      TLS_CERT_FILE: /certs/cert.pem
+      TLS_KEY_FILE: /certs/key.pem
+    volumes:
+      - qilin_certs:/certs
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - qilin_net
+
+networks:
+  qilin_net:
+    driver: bridge
+
+volumes:
+  qdrant_data:
+    driver: local
+  qilin_certs:
+    driver: local
