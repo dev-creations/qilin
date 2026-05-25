@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -91,8 +92,14 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if info.Mode().Perm() != 0o600 {
-		t.Errorf("config file perms = %o, want 0600", info.Mode().Perm())
+	// Windows file modes only carry the read-only bit; Go reports 0666 (or
+	// 0444 if read-only) for regular files regardless of what mode we chmod'd
+	// the file to. The 0600 contract still matters on POSIX, where it's the
+	// only way to keep an API key out of other users' eyes.
+	if runtime.GOOS != "windows" {
+		if info.Mode().Perm() != 0o600 {
+			t.Errorf("config file perms = %o, want 0600", info.Mode().Perm())
+		}
 	}
 
 	loaded, err := Load(path)

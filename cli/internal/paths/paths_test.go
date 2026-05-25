@@ -6,41 +6,56 @@ import (
 	"testing"
 )
 
-func TestResolveExplicitWins(t *testing.T) {
-	t.Setenv("QILIN_HOME", "/from-env")
-	t.Setenv("XDG_CONFIG_HOME", "/from-xdg")
+// abs normalises p the same way Resolve does (filepath.Abs + filepath.Clean),
+// so test expectations match cross-platform: on Windows /foo gets the current
+// drive prefixed, on POSIX it stays as /foo.
+func abs(t *testing.T, p string) string {
+	t.Helper()
+	a, err := filepath.Abs(p)
+	if err != nil {
+		t.Fatalf("filepath.Abs(%q): %v", p, err)
+	}
+	return filepath.Clean(a)
+}
 
-	got, err := Resolve("/from-flag")
+func TestResolveExplicitWins(t *testing.T) {
+	t.Setenv("QILIN_HOME", filepath.Join(t.TempDir(), "from-env"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "from-xdg"))
+
+	explicit := filepath.Join(t.TempDir(), "from-flag")
+	got, err := Resolve(explicit)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if filepath.ToSlash(got.Home) != "/from-flag" {
-		t.Fatalf("explicit flag should win, got %s", got.Home)
+	if got.Home != abs(t, explicit) {
+		t.Fatalf("explicit flag should win, got %s, want %s", got.Home, abs(t, explicit))
 	}
 }
 
 func TestResolveEnvOverridesXDG(t *testing.T) {
-	t.Setenv("QILIN_HOME", "/from-env")
-	t.Setenv("XDG_CONFIG_HOME", "/from-xdg")
+	envHome := filepath.Join(t.TempDir(), "from-env")
+	t.Setenv("QILIN_HOME", envHome)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "from-xdg"))
 
 	got, err := Resolve("")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if filepath.ToSlash(got.Home) != "/from-env" {
-		t.Fatalf("QILIN_HOME should win over XDG, got %s", got.Home)
+	if got.Home != abs(t, envHome) {
+		t.Fatalf("QILIN_HOME should win over XDG, got %s, want %s", got.Home, abs(t, envHome))
 	}
 }
 
 func TestResolveXDGFallback(t *testing.T) {
+	xdg := filepath.Join(t.TempDir(), "xdg")
 	t.Setenv("QILIN_HOME", "")
-	t.Setenv("XDG_CONFIG_HOME", "/xdg")
+	t.Setenv("XDG_CONFIG_HOME", xdg)
 
 	got, err := Resolve("")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	want := filepath.Clean("/xdg/qilin")
+	want := abs(t, filepath.Join(xdg, "qilin"))
 	if got.Home != want {
 		t.Fatalf("XDG fallback: want %s, got %s", want, got.Home)
 	}
@@ -50,19 +65,21 @@ func TestResolvePopulatesAllPaths(t *testing.T) {
 	t.Setenv("QILIN_HOME", "")
 	t.Setenv("XDG_CONFIG_HOME", "")
 
-	got, err := Resolve("/tmp/qilintest")
+	base := filepath.Join(t.TempDir(), "qilintest")
+	got, err := Resolve(base)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
+	absBase := abs(t, base)
 	checks := []struct {
 		name, got, want string
 	}{
-		{"Config", got.Config, filepath.Join("/tmp/qilintest", ConfigFileName)},
-		{"Env", got.Env, filepath.Join("/tmp/qilintest", EnvFileName)},
-		{"Compose", got.Compose, filepath.Join("/tmp/qilintest", ComposeFileName)},
-		{"Certs", got.Certs, filepath.Join("/tmp/qilintest", CertsDirName)},
-		{"Cert", got.Cert, filepath.Join("/tmp/qilintest", CertsDirName, CertFileName)},
-		{"Key", got.Key, filepath.Join("/tmp/qilintest", CertsDirName, KeyFileName)},
+		{"Config", got.Config, filepath.Join(absBase, ConfigFileName)},
+		{"Env", got.Env, filepath.Join(absBase, EnvFileName)},
+		{"Compose", got.Compose, filepath.Join(absBase, ComposeFileName)},
+		{"Certs", got.Certs, filepath.Join(absBase, CertsDirName)},
+		{"Cert", got.Cert, filepath.Join(absBase, CertsDirName, CertFileName)},
+		{"Key", got.Key, filepath.Join(absBase, CertsDirName, KeyFileName)},
 	}
 	for _, c := range checks {
 		if c.got != c.want {
