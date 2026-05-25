@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=68", "wheel", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "qilin"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Qdrant-backed vector memory exposed over the Model Context Protocol (SSE)."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -42,6 +42,15 @@ where = ["src"]
 
 [tool.setuptools.package-dir]
 "" = "src"
+
+# Source of truth for the package version: annotated git tags `vX.Y.Z`.
+# `write_to` materializes the resolved version into `src/qilin/_version.py`
+# at build/install time so `qilin.__version__` is available at runtime.
+# Inside the Docker image build (where `.git` is not in the context),
+# release.yml sets `SETUPTOOLS_SCM_PRETEND_VERSION_FOR_QILIN` from the tag.
+[tool.setuptools_scm]
+write_to = "src/qilin/_version.py"
+fallback_version = "0.0.0+unknown"
 
 [tool.ruff]
 line-length = 100
