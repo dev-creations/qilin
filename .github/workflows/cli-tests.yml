@@ -1,0 +1,46 @@
+name: cli-tests
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Runs on every PR/push -- intentionally no `paths:` filter so the `go test`
+# checks can be marked Required in branch protection without leaving unrelated
+# PRs stuck on "expected -- waiting for status to be reported". Go tests are
+# <30s so the unconditional cost is negligible.
+
+concurrency:
+  group: cli-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: go test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
+
+      - name: Lint (go vet)
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test -race ./...
