@@ -1,0 +1,7 @@
+# Built binaries
+/qilin
+/qilin.exe
+/dist/
+
+# goreleaser snapshot/work dirs
+.snapshot/

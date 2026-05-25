@@ -1,0 +1,121 @@
+# GoReleaser config for the qilin CLI binary.
+#
+#   cd cli && goreleaser release --snapshot --clean        # local dry-run
+#
+# Release is driven by .github/workflows/release.yml; tag `v*` from the repo
+# root, and the workflow runs `goreleaser release` from this directory.
+
+version: 2
+
+project_name: qilin
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - id: qilin
+    main: ./cmd/qilin
+    binary: qilin
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      # Windows on arm64 isn't widely used yet; skip until there's demand.
+      - goos: windows
+        goarch: arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/dev-creations/qilin/cli/internal/version.Version={{.Version}}
+      - -X github.com/dev-creations/qilin/cli/internal/version.Commit={{.FullCommit}}
+      - -X github.com/dev-creations/qilin/cli/internal/version.Date={{.Date}}
+
+archives:
+  - id: qilin
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_
+      {{- if eq .Os "darwin" }}darwin
+      {{- else if eq .Os "linux" }}linux
+      {{- else }}{{ .Os }}{{ end }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "arm64" }}arm64
+      {{- else }}{{ .Arch }}{{ end }}
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    # LICENSE and README live at the repo root, not under cli/. We surface them
+    # via the GitHub release page itself rather than duplicating them into
+    # every archive (goreleaser refuses to follow `..` paths).
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot+{{ .ShortCommit }}"
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: "(?i)^(feat|feature)(\\(.*\\))?:"
+      order: 0
+    - title: Bug fixes
+      regexp: "(?i)^fix(\\(.*\\))?:"
+      order: 1
+    - title: Other
+      order: 999
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+# Brew tap + Scoop bucket configs are kept here so flipping them on later is a
+# one-line change (skip_upload: false + create the tap/bucket repos). Until
+# then they only generate the formula/manifest locally.
+homebrew_casks:
+  - name: qilin
+    repository:
+      owner: dev-creations
+      name: homebrew-qilin
+      branch: main
+    directory: Casks
+    homepage: https://github.com/dev-creations/qilin
+    description: Plug-and-play vector memory exposed over MCP/SSE.
+    license: MIT
+    binaries:
+      - qilin
+    skip_upload: "true" # flip to false (or remove) once the tap repo exists
+
+scoops:
+  - name: qilin
+    repository:
+      owner: dev-creations
+      name: scoop-qilin
+      branch: main
+    homepage: https://github.com/dev-creations/qilin
+    description: Plug-and-play vector memory exposed over MCP/SSE.
+    license: MIT
+    skip_upload: "true" # flip once the scoop bucket repo exists
+
+release:
+  github:
+    owner: dev-creations
+    name: qilin
+  draft: false
+  prerelease: auto
+  name_template: "qilin {{ .Tag }}"
