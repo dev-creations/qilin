@@ -1,5 +1,12 @@
 FROM python:3.12-slim AS base
 
+# The package version is normally derived from git tags via setuptools-scm,
+# but `.git` is not part of the build context. Release CI passes the tag in
+# via this build-arg; local `docker build` without it falls back to the
+# `fallback_version` configured in pyproject.toml ("0.0.0+unknown").
+ARG SETUPTOOLS_SCM_PRETEND_VERSION_FOR_QILIN=0.0.0+unknown
+ENV SETUPTOOLS_SCM_PRETEND_VERSION_FOR_QILIN=${SETUPTOOLS_SCM_PRETEND_VERSION_FOR_QILIN}
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \

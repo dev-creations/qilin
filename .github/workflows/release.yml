@@ -41,6 +41,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -57,7 +59,12 @@ jobs:
 
       - name: Extract tag
         id: tag
-        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+        # `tag` keeps the v-prefix (e.g. v1.2.3) for the image tag.
+        # `pep440` strips it (e.g. 1.2.3) for setuptools-scm, which expects
+        # PEP 440 versions.
+        run: |
+          echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          echo "pep440=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
 
       - name: Build & push image
         uses: docker/build-push-action@v6
@@ -69,5 +76,7 @@ jobs:
           tags: |
             ghcr.io/dev-creations/qilin-mcp:${{ steps.tag.outputs.tag }}
             ghcr.io/dev-creations/qilin-mcp:latest
+          build-args: |
+            SETUPTOOLS_SCM_PRETEND_VERSION_FOR_QILIN=${{ steps.tag.outputs.pep440 }}
           provenance: true
           sbom: true

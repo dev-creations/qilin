@@ -1,0 +1,56 @@
+# Keep the Docker build context small. The Python image only needs
+# pyproject.toml, README.md, src/, and scripts/ -- everything else is noise.
+
+.git
+.github
+.gitignore
+.gitattributes
+
+# Go CLI sources are unrelated to the Python image.
+cli/
+
+# Local virtualenvs and caches.
+.venv/
+.venv-*/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Build outputs.
+build/
+dist/
+
+# Coverage and test artifacts.
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Editor / OS noise.
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Local TLS material / env files (handled outside the image anyway).
+.env
+.env.local
+certs/
+*.pem
+*.key
+*.crt
+!*.example
+
+# Tests aren't shipped in the image.
+tests/
+
+# Docs not needed inside the image.
+img/
+LICENSE
