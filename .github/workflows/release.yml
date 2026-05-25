@@ -59,12 +59,15 @@ jobs:
 
       - name: Extract tag
         id: tag
-        # `tag` keeps the v-prefix (e.g. v1.2.3) for the image tag.
-        # `pep440` strips it (e.g. 1.2.3) for setuptools-scm, which expects
-        # PEP 440 versions.
-        run: |
-          echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
-          echo "pep440=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+        # The git tag uses a `v` prefix by convention (`v1.2.3`), but every
+        # other version surface in this project is PEP 440 / no-prefix:
+        #   - GoReleaser injects `{{.Version}}` (stripped of `v`) into the CLI
+        #     binary, so `version.ImageTag()` returns `1.2.3`.
+        #   - setuptools-scm requires PEP 440, so `qilin.__version__` is also
+        #     `1.2.3`.
+        # We tag the image with the same PEP 440 form so the CLI's compose
+        # file lines up with what's actually published on GHCR.
+        run: echo "pep440=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
 
       - name: Build & push image
         uses: docker/build-push-action@v6
@@ -74,7 +77,7 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            ghcr.io/dev-creations/qilin-mcp:${{ steps.tag.outputs.tag }}
+            ghcr.io/dev-creations/qilin-mcp:${{ steps.tag.outputs.pep440 }}
             ghcr.io/dev-creations/qilin-mcp:latest
           build-args: |
             SETUPTOOLS_SCM_PRETEND_VERSION_FOR_QILIN=${{ steps.tag.outputs.pep440 }}
