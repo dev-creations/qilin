@@ -1,28 +1,14 @@
 # Qilin
 
-Vector memory for any AI, exposed over the [Model Context Protocol](https://modelcontextprotocol.io/) (MCP)
-via Server-Sent Events over HTTPS.
+<p align="center">
+  <img src="img/title.jpg" alt="qi lin logo" width="200">
+</p>
 
-- Embeddings: [`nomic-embed-text-v2-moe`](https://ollama.com/library/nomic-embed-text-v2-moe) served by the host's Ollama (768-dim, multilingual MoE, 512-token context).
-- Vector store: [Qdrant](https://qdrant.tech/) (cosine distance).
-- Transport: MCP over SSE on `https://<host>:8443/sse` with auto-generated self-signed TLS.
-- Chunking: automatic, token-aware (defaults to ~450-token windows with 50-token overlap), so dropping a 10k-word document in is fine.
+Plug and Play memory improvement for your AI using Vector memory, exposed over [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) via Server-Sent Events over HTTPS.
 
-## Architecture
+## What is this?
 
-```
-MCP Client (any AI / IDE)
-        |
-        | HTTPS, SSE  (https://localhost:8443/sse)
-        v
-qilin-mcp container  ----embed---->  Host Ollama
-        |                            (nomic-embed-text-v2-moe @ :11434)
-        | HTTP
-        v
-qdrant container  (vectors + payloads, persistent volume)
-```
-
-Two containers (`qilin-mcp`, `qdrant`) + one host process (Ollama). The Ollama server stays on the host so it can use your GPU; the container reaches it via `host.docker.internal`.
+This is a docker-compose repo for you to clone and to run locally, so you will get improved memory on your local machine or for you to self-host. A simple `docker-compose up` gives you all you need.
 
 ## Prerequisites
 
@@ -44,6 +30,8 @@ Two containers (`qilin-mcp`, `qdrant`) + one host process (Ollama). The Ollama s
 
 ## Quick start
 
+You may adjust embeddings model, ports, and so on in the `.env`.
+
 ```bash
 cp .env.example .env
 docker compose build
@@ -58,16 +46,6 @@ Sanity check:
 curl -k https://localhost:8443/healthz
 # -> {"ok": true, "qdrant": "ok", "embedder": "ok", ...}
 ```
-
-## Inspecting the vector store
-
-Qdrant ships a full web dashboard inside the same container. It's reachable at:
-
-**<http://localhost:6333/dashboard>**
-
-The dashboard lets you browse collections, inspect points and payloads, run ad-hoc similarity searches, and — most usefully — see a 2D projection of your embeddings under the **Visualize** tab (colorable by any payload field, e.g. `language` or `repo`).
-
-The port is bound to `127.0.0.1` only, so it is not reachable from the LAN. Remove the `ports:` block under the `qdrant` service in [docker-compose.yml](docker-compose.yml) to disable it entirely.
 
 ## Connecting an MCP client
 
@@ -110,6 +88,39 @@ Then:
 - **Per-app:** point your MCP client's TLS CA bundle at `qilin-ca.pem`.
 
 Browsers and most HTTP clients also expose a "trust on first use" prompt if you visit `https://localhost:8443/` once.
+
+## What is included?
+
+- Embeddings: [`nomic-embed-text-v2-moe`](https://ollama.com/library/nomic-embed-text-v2-moe) served by the host's Ollama (768-dim, multilingual MoE, 512-token context).
+- Vector store: [Qdrant](https://qdrant.tech/) (cosine distance).
+- Transport: MCP over SSE on `https://<host>:8443/sse` with auto-generated self-signed TLS.
+- Chunking: automatic, token-aware (defaults to ~450-token windows with 50-token overlap), so dropping a 10k-word document in is fine.
+
+## Architecture
+
+```
+MCP Client (any AI / IDE)
+        |
+        | HTTPS, SSE  (https://localhost:8443/sse)
+        v
+qilin-mcp container  ----embed---->  Host Ollama
+        |                            (nomic-embed-text-v2-moe @ :11434)
+        | HTTP
+        v
+qdrant container  (vectors + payloads, persistent volume)
+```
+
+Two containers (`qilin-mcp`, `qdrant`) + one host process (Ollama). The Ollama server stays on the host so it can use your GPU; the container reaches it via `host.docker.internal`.
+
+## Inspecting the vector store
+
+Qdrant ships a full web dashboard inside the same container. It's reachable at:
+
+**<http://localhost:6333/dashboard>**
+
+The dashboard lets you browse collections, inspect points and payloads, run ad-hoc similarity searches, and — most usefully — see a 2D projection of your embeddings under the **Visualize** tab (colorable by any payload field, e.g. `language` or `repo`).
+
+The port is bound to `127.0.0.1` only, so it is not reachable from the LAN. Remove the `ports:` block under the `qdrant` service in [docker-compose.yml](docker-compose.yml) to disable it entirely.
 
 ## Tools exposed over MCP
 
