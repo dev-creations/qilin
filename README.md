@@ -4,6 +4,11 @@
   <img src="img/title.jpg" alt="qi lin logo" width="200">
 </p>
 
+<p align="center">
+  <a href="https://github.com/dev-creations/qilin/actions/workflows/tests.yml"><img src="https://github.com/dev-creations/qilin/actions/workflows/tests.yml/badge.svg" alt="tests"></a>
+  <a href="https://codecov.io/gh/dev-creations/qilin"><img src="https://codecov.io/gh/dev-creations/qilin/branch/main/graph/badge.svg" alt="coverage"></a>
+</p>
+
 Plug and Play memory improvement for your AI using Vector memory, exposed over [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) via Server-Sent Events over HTTPS.
 
 ## What is this?
@@ -284,7 +289,9 @@ followed by `pytest` (with coverage) on Python 3.11 and 3.12. It is triggered on
 - every `push` to `main`
 
 Coverage reports (`coverage.xml` and `htmlcov/`) are uploaded as workflow
-artifacts on each run.
+artifacts on each run, and `coverage.xml` is also pushed to
+[Codecov](https://codecov.io/gh/dev-creations/qilin) so the badge above and
+the per-PR diff coverage stay up to date.
 
 ## Out of scope (for now)
 
