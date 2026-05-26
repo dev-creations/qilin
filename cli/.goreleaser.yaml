@@ -84,23 +84,27 @@ changelog:
       - "^test:"
       - "^chore:"
 
-# Homebrew formula tap + Scoop bucket. Both are published on every `v*` tag;
+# Homebrew Cask tap + Scoop bucket. Both are published on every `v*` tag;
 # the release workflow needs a PAT/App token (TAP_GITHUB_TOKEN) with
-# `contents: write` on dev-creations/homebrew-qilin and dev-creations/scoop-qilin.
-brews:
+# `contents: write` on dev-creations/qilin (for the GitHub Release) and on
+# dev-creations/homebrew-qilin + dev-creations/scoop-qilin (for the
+# formula/manifest commits).
+#
+# Note: we use `homebrew_casks` rather than `brews` because GoReleaser
+# deprecated the latter in v2.16. Linuxbrew now supports Casks too, so this
+# is the supported path going forward.
+homebrew_casks:
   - name: qilin
     repository:
       owner: dev-creations
       name: homebrew-qilin
       branch: main
-    directory: Formula
+    directory: Casks
     homepage: https://github.com/dev-creations/qilin
     description: Plug-and-play vector memory exposed over MCP/SSE.
     license: MIT
-    install: |
-      bin.install "qilin"
-    test: |
-      assert_match "qilin", shell_output("#{bin}/qilin --version")
+    binaries:
+      - qilin
 
 scoops:
   - name: qilin
