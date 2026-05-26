@@ -23,6 +23,10 @@ Qilin is a single CLI binary (`qilin`) that bootstraps a complete MCP server on 
 
 No cloning, no editing `.env` files, no hand-rolling docker-compose.
 
+In-depth docs (architecture, migration notes, copy-pasteable recipes) live
+under [`docs/`](docs/README.md). The [`CHANGELOG`](CHANGELOG.md) tracks
+notable changes per release.
+
 ## Prerequisites
 
 1. **Docker** + Docker Compose v2 (Docker Desktop or `docker` + `docker compose` plugin).
@@ -193,6 +197,13 @@ To rotate the cert: `qilin cert regenerate` (then `qilin down && qilin up`).
 | `chunking.size_tokens` | `450` | Target tokens per chunk. |
 | `chunking.overlap_tokens` | `50` | Overlap between consecutive chunks. |
 | `chunking.batch_size` | `16` | Batch size for Ollama `/api/embed`. |
+| `auth_token` | _(unset)_ | Bearer token (or list) required on incoming MCP requests. Unset = open to localhost. See [expose-on-lan](docs/recipes/expose-on-lan.md). |
+| `streamable_http_enabled` | `true` | Mount FastMCP's streamable HTTP app at `/mcp` alongside `/sse`. |
+| `ttl_sweep_seconds` | `300` | How often the TTL sweeper deletes expired chunks. |
+| `recall_log_path` | `~/.qilin/logs/recall.jsonl` | JSONL recall log destination. Empty string disables logging. |
+| `collections.<name>.chunk_size_tokens` | _(inherits)_ | Per-collection chunk size override. |
+| `collections.<name>.chunk_overlap_tokens` | _(inherits)_ | Per-collection chunk overlap override. |
+| `collections.<name>.ttl_seconds` | _(unset)_ | If set, chunks in this collection are auto-deleted that many seconds after `remember`. See [scratch-vs-knowledge-collections](docs/recipes/scratch-vs-knowledge-collections.md). |
 
 Override the config directory with `--qilin-home <dir>` or `$QILIN_HOME`. On Linux, `$XDG_CONFIG_HOME/qilin` is also honored.
 
@@ -233,12 +244,96 @@ The port is bound to `127.0.0.1` only, so it isn't reachable from the LAN.
 
 | Tool | Purpose |
 |---|---|
-| `remember(text, collection?, metadata?, source?)` | Chunks, embeds, and stores text. Returns `{collection, chunks_written, ids, document_hash}`. Idempotent per `(source, content)`. |
-| `recall(query, collection?, top_k?, filter?, score_threshold?)` | Vector search; returns `[{id, score, text, metadata}, ...]`. |
+| `remember(text, collection?, metadata?, source?, language?)` | Chunks, embeds, and stores text. Returns `{collection, chunks_written, ids, document_hash}`. Idempotent per `(source, content)`. |
+| `recall(query, collection?, top_k?, filter?, score_threshold?, context_window?, group_by_source?, mmr_lambda?, mode?, rerank?, rerank_top_k?)` | Vector search; returns a flat list of hits (see below). |
+| `recall_files(query, ...)` | Groups recall hits by `source`, returns one entry per file (see [hybrid-search](docs/recipes/hybrid-search.md)). |
 | `forget(ids?, collection?, filter?)` | Deletes points by id or by payload filter. |
 | `list_collections()` | Lists collection names. |
 | `create_collection(name)` | Creates an empty collection (idempotent). |
 | `stats(collection?)` | Returns counts/status for a collection. |
+| `mark_useful(id, useful?, collection?)` | Thumbs-up/down a recall hit; boosts future recall scores for that chunk. See [recall-feedback-loop](docs/recipes/recall-feedback-loop.md). |
+
+### `recall` response shape
+
+Since v1.0.0 each hit is a flat dict:
+
+```json
+{
+  "id": "abc-123",
+  "score": 0.83,
+  "text": "...",
+  "source": "src/foo.py",
+  "language": "python",
+  "start_line": 30,
+  "end_line": 95,
+  "lines": "30-95",
+  "chunk_ordinal": 2,
+  "chunk_count": 5,
+  "document_hash": "...",
+  "created_at": "2025-12-30T10:00:00Z",
+  "extra_metadata": { "label": "weekly" }
+}
+```
+
+If you're coming from 0.x, the [migration guide](docs/migrating-to-1.0.md) has
+the full delta.
+
+### Recall tuning
+
+`recall` takes three optional post-processing knobs:
+
+- `context_window=N` - merge each hit with its `N` neighbor chunks (same
+  `source`), so a function split across a chunk boundary still comes back as
+  one contiguous block.
+- `group_by_source=True` - keep at most one hit per `source`.
+- `mmr_lambda=0..1` - re-rank candidates by Maximal Marginal Relevance for
+  diversity.
+
+See [Recipe: Tuning recall](docs/recipes/tuning-recall.md) for worked examples.
+
+### Code-aware chunking
+
+When the caller supplies a `language` (or when `qilin ingest` detects one
+from a file extension), Qilin runs a tree-sitter parser instead of the prose
+chunker and emits one chunk per function/class/method. Code chunks also
+carry `defines`, `imports`, `signature`, and `language` payload fields, with
+a KEYWORD index on `defines` and `language` so `filter={"defines": "MyClass"}`
+or `filter={"language": "rust"}` stays fast. Supported languages: Python, Go,
+JavaScript, TypeScript, TSX, Rust. Other languages fall back to the prose
+chunker. See [Recipe: Code-aware search](docs/recipes/code-search.md).
+
+### Keeping memory in sync (incremental ingest + watch mode)
+
+`qilin ingest` is incremental: it scans the destination collection on every
+run, re-embeds files whose content changed (cleaning up the old chunks in the
+same pass), and skips files whose hash still matches. Pass `--prune` to also
+forget sources that no longer exist on disk (scoped to the active
+`--source-prefix`). For editor-loop workflows, `qilin watch <path>` listens
+for filesystem events and re-ingests on save. See
+[Incremental ingest](docs/recipes/incremental-ingest.md) and
+[Watch mode](docs/recipes/watch-mode.md).
+
+### Per-collection chunking
+
+The settings block accepts a `collections: {name: {...}}` map so different
+collections can have different `chunk_size_tokens` / `chunk_overlap_tokens`.
+Useful for splitting code (fine-grained, small chunks) from docs (larger
+chunks). See
+[Code vs. docs collections](docs/recipes/code-vs-docs-collections.md).
+
+### Hybrid search and reranking
+
+Two opt-in retrieval upgrades:
+
+- `hybrid_enabled=true` — new collections store dense + BM25 sparse vectors;
+  `recall(mode="hybrid")` fuses them via Qdrant's server-side Reciprocal
+  Rank Fusion.
+- `rerank_enabled=true` (or per-call `rerank=true`) — a FastEmbed
+  cross-encoder reorders the candidate pool before truncating to `top_k`.
+
+A new MCP tool, `recall_files`, returns the top-K *files* (with previews and
+line spans) rather than chunks. See
+[Recipe: Hybrid search and reranking](docs/recipes/hybrid-search.md).
 
 ### Chunking behaviour
 
@@ -325,12 +420,26 @@ The suite uses mocked Qdrant and Ollama clients, so it runs without any external
 - [`.github/workflows/cli-tests.yml`](.github/workflows/cli-tests.yml) runs `go vet` and `go test -race` on Linux, macOS, and Windows.
 - [`.github/workflows/release.yml`](.github/workflows/release.yml) fires on `v*` tags: GoReleaser builds the CLI binaries, and Docker Buildx pushes a multi-arch `ghcr.io/dev-creations/qilin-mcp` image.
 
-## Out of scope (for now)
+## Production deployment
 
-- Authentication on the SSE endpoint — add bearer-token middleware in `server.py` if you expose this beyond `localhost`.
-- The newer MCP "Streamable HTTP" transport — FastMCP supports it, so adding a `/mcp` endpoint is a small change.
-- Hybrid (BM25) search, reranking, and multi-tenant isolation beyond per-collection separation.
-- Native (non-Docker) host runtime under the Go CLI — Docker is currently required.
+For anything beyond localhost development, see:
+
+- **[Exposing Qilin on the LAN](docs/recipes/expose-on-lan.md)** — TLS trust,
+  bearer-token auth (`auth_token` setting), streamable HTTP transport
+  (`/mcp`), and firewall notes.
+- **[Scratch vs. knowledge collections](docs/recipes/scratch-vs-knowledge-collections.md)** —
+  TTL-backed session memory beside long-lived knowledge.
+- **[Recall feedback loop](docs/recipes/recall-feedback-loop.md)** — recall
+  analytics (`qilin recall-log`) plus `mark_useful` to bias future
+  retrieval.
+
+### Out of scope (for now)
+
+- Multi-tenant isolation beyond per-collection separation. Bearer-token
+  auth is single-tier; if you need per-team scopes, put Qilin behind an
+  auth proxy.
+- Native (non-Docker) host runtime under the Go CLI — Docker is currently
+  required.
 
 ## License
 

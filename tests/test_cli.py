@@ -51,11 +51,12 @@ class TestRecallCommand:
                         "id": "p1",
                         "score": 0.87,
                         "text": "hello world",
-                        "metadata": {
-                            "source": "a.md",
-                            "chunk_ordinal": 0,
-                            "chunk_count": 1,
-                        },
+                        "source": "a.md",
+                        "chunk_ordinal": 0,
+                        "chunk_count": 1,
+                        "start_line": 1,
+                        "end_line": 4,
+                        "lines": "1-4",
                     }
                 ]
             ),
@@ -65,6 +66,7 @@ class TestRecallCommand:
 
         assert result.exit_code == 0
         assert "a.md" in result.stdout
+        assert "1-4" in result.stdout
         assert "hello world" in result.stdout
 
     def test_full_flag_does_not_truncate(self, runner: CliRunner, mocker) -> None:
@@ -78,7 +80,7 @@ class TestRecallCommand:
                         "id": "p1",
                         "score": 0.5,
                         "text": long_text,
-                        "metadata": {"source": "long.md"},
+                        "source": "long.md",
                     }
                 ]
             ),
@@ -172,6 +174,7 @@ class TestIngestCommand:
 
         fake_store = AsyncMock()
         fake_store.chunks_exist.return_value = False
+        fake_store.scan_sources.return_value = {}
         mocker.patch.object(
             cli_module, "get_store", AsyncMock(return_value=fake_store)
         )
@@ -201,9 +204,13 @@ class TestIngestCommand:
         self, runner: CliRunner, tmp_path: Path, mocker
     ) -> None:
         (tmp_path / "a.py").write_text("x = 1\n")
+        text_hash = cli_module._content_hash("x = 1\n")
 
         fake_store = AsyncMock()
         fake_store.chunks_exist.return_value = True
+        fake_store.scan_sources.return_value = {
+            "a.py": [{"document_hash": text_hash, "chunk_count": 1, "ids": ["i"]}]
+        }
         mocker.patch.object(
             cli_module, "get_store", AsyncMock(return_value=fake_store)
         )
@@ -223,6 +230,7 @@ class TestIngestCommand:
         (tmp_path / "binary.bin").write_bytes(b"\x00\x01")
 
         fake_store = AsyncMock()
+        fake_store.scan_sources.return_value = {}
         mocker.patch.object(
             cli_module, "get_store", AsyncMock(return_value=fake_store)
         )
@@ -241,6 +249,7 @@ class TestIngestCommand:
 
         fake_store = AsyncMock()
         fake_store.chunks_exist.return_value = False
+        fake_store.scan_sources.return_value = {}
         mocker.patch.object(
             cli_module, "get_store", AsyncMock(return_value=fake_store)
         )
@@ -254,6 +263,75 @@ class TestIngestCommand:
         assert result.exit_code == 0
         assert "keep.py" in result.stdout
         assert "skip_me.py" not in result.stdout
+
+
+class TestRecallLogCommand:
+    def test_prints_dim_message_when_log_missing(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        result = runner.invoke(
+            cli_module.app,
+            ["recall-log", "--path", str(tmp_path / "missing.jsonl")],
+        )
+        assert result.exit_code == 0
+        assert "No recall log" in result.stdout
+
+    def test_renders_recent_events(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "recall.jsonl"
+        path.write_text(
+            "\n".join(
+                [
+                    '{"ts":"2026-05-26T10:00:00+00:00","query":"first","collection":"memory","mode":"hybrid","top_k":3,"latency_ms":12.5,"hits":[{"id":"deadbeefcafe","score":0.9,"source":"a.py","lines":"1-5"}]}',
+                    '{"ts":"2026-05-26T10:05:00+00:00","query":"second","collection":"memory","mode":"dense","top_k":1,"latency_ms":3.0,"hits":[]}',
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(
+            cli_module.app, ["recall-log", "--path", str(path), "-n", "5"]
+        )
+        assert result.exit_code == 0, result.stdout
+        assert "first" in result.stdout
+        assert "second" in result.stdout
+        assert "a.py" in result.stdout
+        assert "12ms" in result.stdout
+
+    def test_invalid_since_exits_nonzero(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "recall.jsonl"
+        path.write_text('{"ts":"2026-05-26T10:00:00+00:00","query":"q"}\n', encoding="utf-8")
+        result = runner.invoke(
+            cli_module.app,
+            ["recall-log", "--path", str(path), "--since", "garbage"],
+        )
+        assert result.exit_code == 1
+
+    def test_since_filters_old_events(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        now = datetime.now(UTC)
+        old = now - timedelta(hours=2)
+        recent = now - timedelta(minutes=5)
+        path = tmp_path / "recall.jsonl"
+        path.write_text(
+            f'{{"ts":"{old.isoformat()}","query":"OLD","collection":"m","mode":"dense","top_k":1,"hits":[]}}\n'
+            f'{{"ts":"{recent.isoformat()}","query":"NEW","collection":"m","mode":"dense","top_k":1,"hits":[]}}\n',
+            encoding="utf-8",
+        )
+        result = runner.invoke(
+            cli_module.app,
+            ["recall-log", "--path", str(path), "--since", "1h"],
+        )
+        assert result.exit_code == 0
+        assert "NEW" in result.stdout
+        assert "OLD" not in result.stdout
 
 
 class TestHelpers:

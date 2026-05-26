@@ -102,7 +102,7 @@ class TestRecall:
         fake_store.search.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_returns_mapped_hits_with_metadata_stripped(
+    async def test_returns_flat_hits_with_first_class_fields(
         self, fake_embedder, fake_store
     ) -> None:
         fake_embedder.embed.return_value = [[0.1, 0.2, 0.3]]
@@ -111,7 +111,19 @@ class TestRecall:
                 id="pid-1",
                 score=0.95,
                 text="hello",
-                payload={"text": "hello", "source": "a.md", "lang": "en"},
+                payload={
+                    "text": "hello",
+                    "source": "a.md",
+                    "language": "markdown",
+                    "start_line": 30,
+                    "end_line": 95,
+                    "chunk_ordinal": 0,
+                    "chunk_count": 1,
+                    "document_hash": "abc",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "lang": "en",
+                    "author": "alice",
+                },
             ),
         ]
 
@@ -128,11 +140,76 @@ class TestRecall:
         assert h["id"] == "pid-1"
         assert h["score"] == pytest.approx(0.95)
         assert h["text"] == "hello"
-        assert "text" not in h["metadata"]
-        assert h["metadata"]["source"] == "a.md"
+        assert h["source"] == "a.md"
+        assert h["language"] == "markdown"
+        assert h["start_line"] == 30
+        assert h["end_line"] == 95
+        assert h["lines"] == "30-95"
+        assert h["chunk_ordinal"] == 0
+        assert h["chunk_count"] == 1
+        assert h["document_hash"] == "abc"
+        assert h["created_at"] == "2026-01-01T00:00:00Z"
+        assert h["extra_metadata"] == {"lang": "en", "author": "alice"}
+        assert "metadata" not in h
+        assert "text" not in h.get("extra_metadata", {})
 
         fake_embedder.embed.assert_awaited_once()
         fake_store.search.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_single_line_hit_renders_unranged_lines(
+        self, fake_embedder, fake_store
+    ) -> None:
+        fake_embedder.embed.return_value = [[0.1]]
+        fake_store.search.return_value = [
+            SearchHit(
+                id="x",
+                score=0.5,
+                text="t",
+                payload={"text": "t", "source": "f", "start_line": 7, "end_line": 7},
+            ),
+        ]
+
+        hits = await tools.recall(query="q")
+
+        assert hits[0]["lines"] == "7"
+
+    @pytest.mark.asyncio
+    async def test_hit_without_line_spans_has_no_lines_field(
+        self, fake_embedder, fake_store
+    ) -> None:
+        fake_embedder.embed.return_value = [[0.1]]
+        fake_store.search.return_value = [
+            SearchHit(
+                id="x",
+                score=0.5,
+                text="t",
+                payload={"text": "t", "source": "f"},
+            ),
+        ]
+
+        hits = await tools.recall(query="q")
+
+        assert "lines" not in hits[0]
+        assert "start_line" not in hits[0]
+
+    @pytest.mark.asyncio
+    async def test_hit_with_no_extra_payload_omits_extra_metadata(
+        self, fake_embedder, fake_store
+    ) -> None:
+        fake_embedder.embed.return_value = [[0.1]]
+        fake_store.search.return_value = [
+            SearchHit(
+                id="x",
+                score=0.5,
+                text="t",
+                payload={"text": "t", "source": "f"},
+            ),
+        ]
+
+        hits = await tools.recall(query="q")
+
+        assert "extra_metadata" not in hits[0]
 
 
 class TestForget:
@@ -205,3 +282,106 @@ def test_search_hit_helper_smoke() -> None:
     hit = SearchHit(id="x", score=1.0, text="t", payload={"text": "t"})
     payload = SimpleNamespace(**hit.payload)
     assert payload.text == "t"
+
+
+class TestMarkUseful:
+    @pytest.mark.asyncio
+    async def test_empty_id_returns_error(self, fake_store) -> None:
+        out = await tools.mark_useful(id="")
+        assert out["error"] == "id required"
+        fake_store.bump_feedback.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_upvote_delegates_with_positive_delta(self, fake_store) -> None:
+        fake_store.bump_feedback.return_value = 3
+        out = await tools.mark_useful(id="abc", useful=True)
+        assert out == {"id": "abc", "collection": "memory", "feedback": 3}
+        fake_store.bump_feedback.assert_awaited_once_with("memory", "abc", 1)
+
+    @pytest.mark.asyncio
+    async def test_downvote_uses_negative_delta(self, fake_store) -> None:
+        fake_store.bump_feedback.return_value = -1
+        out = await tools.mark_useful(id="abc", useful=False, collection="scratch")
+        assert out == {"id": "abc", "collection": "scratch", "feedback": -1}
+        fake_store.bump_feedback.assert_awaited_once_with("scratch", "abc", -1)
+
+    @pytest.mark.asyncio
+    async def test_swallows_store_error(self, fake_store) -> None:
+        fake_store.bump_feedback.side_effect = RuntimeError("kaboom")
+        out = await tools.mark_useful(id="abc")
+        assert "error" in out
+        assert "RuntimeError" in out["error"]
+
+
+class TestRememberTTL:
+    @pytest.mark.asyncio
+    async def test_writes_expires_at_when_collection_has_ttl(
+        self, fake_embedder, fake_store, mocker
+    ) -> None:
+        from qilin.config import CollectionOverride, get_settings
+
+        settings = get_settings()
+        mocker.patch.dict(
+            settings.collections,
+            {"scratch": CollectionOverride(ttl_seconds=60)},
+            clear=False,
+        )
+
+        fake_embedder.embed.return_value = [[0.1, 0.2, 0.3]]
+        fake_store.upsert_chunks.return_value = 1
+
+        await tools.remember(text="ephemeral", collection="scratch")
+
+        args = fake_store.upsert_chunks.await_args.args
+        payloads = args[2]
+        assert payloads, "expected at least one payload"
+        first = payloads[0]
+        assert "expires_at" in first, f"expires_at missing from {first!r}"
+        assert isinstance(first["expires_at"], str)
+
+    @pytest.mark.asyncio
+    async def test_no_expires_at_when_no_ttl(
+        self, fake_embedder, fake_store
+    ) -> None:
+        fake_embedder.embed.return_value = [[0.1, 0.2, 0.3]]
+        fake_store.upsert_chunks.return_value = 1
+
+        await tools.remember(text="forever", collection="memory")
+
+        args = fake_store.upsert_chunks.await_args.args
+        payloads = args[2]
+        assert payloads
+        assert "expires_at" not in payloads[0]
+
+
+class TestRecallFeedbackBoost:
+    @pytest.mark.asyncio
+    async def test_recall_applies_feedback_boost(
+        self, fake_embedder, fake_store, mocker
+    ) -> None:
+        from qilin.config import get_settings
+
+        settings = get_settings()
+        mocker.patch.object(settings, "recall_log_path", "")
+
+        fake_embedder.embed.return_value = [[0.1, 0.2, 0.3]]
+        fake_store.search.return_value = [
+            SearchHit(
+                id="up",
+                score=0.5,
+                text="upvoted",
+                payload={"text": "upvoted", "source": "a", "feedback": 4},
+            ),
+            SearchHit(
+                id="neutral",
+                score=0.55,
+                text="neutral",
+                payload={"text": "neutral", "source": "b"},
+            ),
+        ]
+
+        out = await tools.recall(query="q", top_k=2)
+
+        assert out[0]["id"] == "up"
+        assert out[0]["score"] > 0.5
+        assert out[0]["score"] > out[1]["score"]

@@ -19,6 +19,7 @@ import asyncio
 import logging
 import subprocess
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
 
@@ -33,7 +34,7 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
-from . import tools
+from . import analytics, tools
 from .config import get_settings
 from .embeddings import shutdown_embedder
 from .store import _content_hash, get_store, shutdown_store
@@ -215,6 +216,15 @@ def ingest(
         str | None,
         typer.Option("--label", help="Free-form label written into every chunk's metadata."),
     ] = None,
+    prune: Annotated[
+        bool,
+        typer.Option(
+            "--prune/--no-prune",
+            help=(
+                "After ingest, forget any source under the same source_prefix that no longer exists on disk."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Walk PATH and store matching files in Qilin's vector memory.
 
@@ -223,8 +233,13 @@ def ingest(
     - .gitignore at the path root is honored;
     - common lockfiles, build outputs, virtualenvs and VCS folders are skipped;
     - files larger than 256KB are skipped;
-    - files already stored under the same (source, sha256(content)) are skipped
-      (so re-running the command is fast and idempotent).
+    - files already stored under the same (source, sha256(content)) are skipped;
+    - stale chunks from earlier ingests of the *same* source (different content
+      hash) are cleaned up automatically.
+
+    Pass ``--prune`` to additionally delete sources that exist in the
+    collection but no longer match a file on disk under the active
+    ``source_prefix``. Use that for keeping a watched repository in sync.
     """
     repo_root = path.resolve()
     if not repo_root.exists():
@@ -256,8 +271,111 @@ def ingest(
             label=label,
             force=force,
             dry_run=dry_run,
+            prune=prune,
         )
     )
+
+
+@dataclass
+class _IngestStats:
+    """Counters tracked during one ingest run."""
+
+    ingested: int = 0
+    skipped: int = 0
+    empty: int = 0
+    stale_cleaned: int = 0
+    pruned: int = 0
+    total_chunks: int = 0
+    failed: list[tuple[str, str]] | None = None
+
+    def __post_init__(self) -> None:
+        if self.failed is None:
+            self.failed = []
+
+
+async def _ingest_one(
+    *,
+    file_path: Path,
+    repo_root: Path,
+    collection: str,
+    source_prefix: str,
+    git_sha: str | None,
+    label: str | None,
+    force: bool,
+    existing: dict[str, list[dict[str, object]]],
+    store,
+    stats: _IngestStats,
+) -> None:
+    """Ingest a single file. Cleans up stale-hash orphans for the same source."""
+    rel = file_path.relative_to(repo_root).as_posix()
+    source = f"{source_prefix}{rel}" if source_prefix else rel
+
+    try:
+        text = file_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        stats.failed.append((source, f"read error: {exc}"))
+        return
+
+    if not text.strip():
+        stats.empty += 1
+        return
+
+    document_hash = _content_hash(text)
+    prior = existing.get(source, [])
+    matched = next(
+        (e for e in prior if e.get("document_hash") == document_hash),
+        None,
+    )
+
+    stale_hashes = [
+        e["document_hash"]
+        for e in prior
+        if e.get("document_hash") and e.get("document_hash") != document_hash
+    ]
+
+    if matched and not force:
+        stats.skipped += 1
+        return
+
+    if stale_hashes:
+        try:
+            deleted = await store.delete(
+                collection,
+                filter_obj={
+                    "source": source,
+                    "document_hash": stale_hashes
+                    if len(stale_hashes) > 1
+                    else stale_hashes[0],
+                },
+            )
+            stats.stale_cleaned += int(deleted or 0)
+        except Exception as exc:  # noqa: BLE001
+            stats.failed.append((source, f"cleanup error: {exc}"))
+
+    ext = file_path.suffix.lower()
+    language = LANG_BY_EXT.get(ext, ext.lstrip(".") or "text")
+    metadata: dict[str, object] = {
+        "file_path": rel,
+        "repo": repo_root.name,
+        "size_bytes": file_path.stat().st_size,
+    }
+    if git_sha:
+        metadata["git_sha"] = git_sha
+    if label:
+        metadata["label"] = label
+
+    try:
+        result = await tools.remember(
+            text=text,
+            collection=collection,
+            metadata=metadata,
+            source=source,
+            language=language,
+        )
+        stats.total_chunks += int(result.get("chunks_written", 0))
+        stats.ingested += 1
+    except Exception as exc:  # noqa: BLE001
+        stats.failed.append((source, type(exc).__name__ + ": " + str(exc)))
 
 
 async def _run_ingest(
@@ -274,6 +392,7 @@ async def _run_ingest(
     label: str | None,
     force: bool,
     dry_run: bool,
+    prune: bool = False,
 ) -> None:
     candidates = list(
         _iter_files(
@@ -309,11 +428,8 @@ async def _run_ingest(
         store = await get_store()
         await store.ensure_collection(collection)
 
-        total_chunks = 0
-        ingested = 0
-        skipped = 0
-        empty = 0
-        failed: list[tuple[str, str]] = []
+        existing = await store.scan_sources(collection)
+        stats = _IngestStats()
 
         with Progress(
             TextColumn("[progress.description]{task.description}"),
@@ -329,53 +445,59 @@ async def _run_ingest(
                 rel = file_path.relative_to(repo_root).as_posix()
                 source = f"{source_prefix}{rel}" if source_prefix else rel
                 progress.update(task, description=f"[dim]{source[-50:]:>50}[/dim]")
-
-                try:
-                    text = file_path.read_text(encoding="utf-8", errors="replace")
-                except OSError as exc:
-                    failed.append((source, f"read error: {exc}"))
-                    progress.advance(task)
-                    continue
-
-                if not text.strip():
-                    empty += 1
-                    progress.advance(task)
-                    continue
-
-                document_hash = _content_hash(text)
-
-                if not force and await store.chunks_exist(collection, source, document_hash):
-                    skipped += 1
-                    progress.advance(task)
-                    continue
-
-                ext = file_path.suffix.lower()
-                metadata: dict[str, object] = {
-                    "file_path": rel,
-                    "repo": repo_root.name,
-                    "language": LANG_BY_EXT.get(ext, ext.lstrip(".") or "text"),
-                    "size_bytes": file_path.stat().st_size,
-                }
-                if git_sha:
-                    metadata["git_sha"] = git_sha
-                if label:
-                    metadata["label"] = label
-
-                try:
-                    result = await tools.remember(
-                        text=text,
-                        collection=collection,
-                        metadata=metadata,
-                        source=source,
-                    )
-                    total_chunks += int(result.get("chunks_written", 0))
-                    ingested += 1
-                except Exception as exc:  # noqa: BLE001
-                    failed.append((source, type(exc).__name__ + ": " + str(exc)))
-
+                await _ingest_one(
+                    file_path=file_path,
+                    repo_root=repo_root,
+                    collection=collection,
+                    source_prefix=source_prefix,
+                    git_sha=git_sha,
+                    label=label,
+                    force=force,
+                    existing=existing,
+                    store=store,
+                    stats=stats,
+                )
                 progress.advance(task)
 
+        if prune:
+            walked_sources = {
+                (
+                    f"{source_prefix}{p.relative_to(repo_root).as_posix()}"
+                    if source_prefix
+                    else p.relative_to(repo_root).as_posix()
+                )
+                for p in candidates
+            }
+            for src in list(existing.keys()):
+                if source_prefix and not src.startswith(source_prefix):
+                    continue
+                if src in walked_sources:
+                    continue
+                try:
+                    deleted = await store.delete(
+                        collection, filter_obj={"source": src}
+                    )
+                    stats.pruned += int(deleted or 0)
+                except Exception as exc:  # noqa: BLE001
+                    stats.failed.append((src, f"prune error: {exc}"))
+
+        # Keep the legacy printout shape but enriched with new counters.
+        ingested = stats.ingested
+        skipped = stats.skipped
+        empty = stats.empty
+        total_chunks = stats.total_chunks
+        failed = stats.failed or []
+
         console.print()
+        if stats.stale_cleaned:
+            console.print(
+                f"  cleaned up [bold]{stats.stale_cleaned}[/bold] stale chunks "
+                f"(re-ingested files)"
+            )
+        if stats.pruned:
+            console.print(
+                f"  pruned [bold]{stats.pruned}[/bold] chunks from deleted sources"
+            )
         console.print(
             f"[green]Done.[/green] "
             f"[bold]{ingested}[/bold] ingested "
@@ -396,6 +518,197 @@ async def _run_ingest(
         await shutdown_store()
 
 
+@app.command("watch")
+def watch(
+    path: Annotated[Path, typer.Argument(help="Directory to watch for changes.")],
+    collection: Annotated[
+        str | None, typer.Option("--collection", "-c", help="Destination collection.")
+    ] = None,
+    source_prefix: Annotated[
+        str,
+        typer.Option("--source-prefix", help="String prepended to each file's source name."),
+    ] = "",
+    include: Annotated[
+        list[str] | None, typer.Option("--include", "-i")
+    ] = None,
+    exclude: Annotated[
+        list[str] | None, typer.Option("--exclude", "-e")
+    ] = None,
+    max_bytes: Annotated[int, typer.Option("--max-bytes")] = 256_000,
+    respect_gitignore: Annotated[
+        bool, typer.Option("--respect-gitignore/--no-respect-gitignore")
+    ] = True,
+    debounce_ms: Annotated[
+        int,
+        typer.Option(
+            "--debounce-ms",
+            help="Coalesce filesystem events within this window before re-ingesting.",
+        ),
+    ] = 500,
+    label: Annotated[str | None, typer.Option("--label")] = None,
+) -> None:
+    """Watch PATH and re-ingest changed files on save.
+
+    Pairs `watchfiles` with the same gitignore / extension / max-bytes filters
+    as `qilin ingest`. On save:
+
+    - changed and added files are re-ingested (stale chunks cleaned up);
+    - deleted files have their chunks forgotten via a payload filter.
+
+    Press Ctrl+C to stop.
+    """
+    repo_root = path.resolve()
+    if not repo_root.exists() or not repo_root.is_dir():
+        console.print(f"[red]error:[/red] {repo_root} is not a directory")
+        raise typer.Exit(code=2)
+
+    settings = get_settings()
+    coll = collection or settings.default_collection
+    include_exts = _normalize_ext_set(include or [], DEFAULT_INCLUDE_EXTS)
+    exclude_dirs = set(exclude or []) | DEFAULT_EXCLUDE_DIRS
+
+    gitignore = _load_gitignore(repo_root) if respect_gitignore else None
+    detected_sha = _detect_git_sha(repo_root)
+
+    asyncio.run(
+        _run_watch(
+            repo_root=repo_root,
+            collection=coll,
+            source_prefix=source_prefix,
+            include_exts=include_exts,
+            exclude_dirs=exclude_dirs,
+            exclude_files=DEFAULT_EXCLUDE_FILES,
+            max_bytes=max_bytes,
+            gitignore=gitignore,
+            git_sha=detected_sha,
+            label=label,
+            debounce_ms=debounce_ms,
+        )
+    )
+
+
+async def _run_watch(
+    *,
+    repo_root: Path,
+    collection: str,
+    source_prefix: str,
+    include_exts: set[str],
+    exclude_dirs: set[str],
+    exclude_files: set[str],
+    max_bytes: int,
+    gitignore: pathspec.PathSpec | None,
+    git_sha: str | None,
+    label: str | None,
+    debounce_ms: int,
+) -> None:
+    """Filesystem event loop that incrementally ingests changed files.
+
+    Imported lazily inside the function so ``qilin --help`` works on platforms
+    without ``watchfiles`` wheels.
+    """
+    try:
+        from watchfiles import Change, awatch
+    except ImportError:
+        console.print(
+            "[red]error:[/red] `watchfiles` is required for `qilin watch`. "
+            "Install with `pip install watchfiles`."
+        )
+        raise typer.Exit(code=2) from None
+
+    console.print(
+        f"[bold]Qilin watch[/bold]  [dim]{repo_root}[/dim]  ->  [cyan]{collection}[/cyan]"
+    )
+    console.print(f"  debounce: {debounce_ms} ms  (Ctrl+C to stop)")
+    console.print()
+
+    store = await get_store()
+    await store.ensure_collection(collection)
+
+    def _accept(p: Path) -> bool:
+        if not p.is_file():
+            return False
+        if p.stat().st_size > max_bytes:
+            return False
+        if p.suffix.lower() not in include_exts:
+            return False
+        parts = set(p.relative_to(repo_root).parts)
+        if parts & exclude_dirs:
+            return False
+        if p.name in exclude_files:
+            return False
+        return not (
+            gitignore is not None
+            and gitignore.match_file(p.relative_to(repo_root).as_posix())
+        )
+
+    try:
+        async for changes in awatch(
+            repo_root,
+            step=debounce_ms,
+            recursive=True,
+            stop_event=None,
+        ):
+            paths = sorted({Path(p) for _, p in changes})
+            to_ingest: list[Path] = []
+            to_delete: list[str] = []
+            for raw in paths:
+                try:
+                    rel = raw.relative_to(repo_root).as_posix()
+                except ValueError:
+                    continue
+                source = f"{source_prefix}{rel}" if source_prefix else rel
+                event_kinds = {kind for kind, p in changes if Path(p) == raw}
+                if Change.deleted in event_kinds and not raw.exists():
+                    to_delete.append(source)
+                    continue
+                if not _accept(raw):
+                    continue
+                to_ingest.append(raw)
+
+            if not to_ingest and not to_delete:
+                continue
+
+            stats = _IngestStats()
+            existing = await store.scan_sources(collection)
+            for src in to_delete:
+                try:
+                    deleted = await store.delete(
+                        collection, filter_obj={"source": src}
+                    )
+                    stats.pruned += int(deleted or 0)
+                    console.print(f"  [magenta]-[/magenta] {src}")
+                except Exception as exc:  # noqa: BLE001
+                    stats.failed.append((src, f"delete error: {exc}"))
+
+            for file_path in to_ingest:
+                rel = file_path.relative_to(repo_root).as_posix()
+                source = f"{source_prefix}{rel}" if source_prefix else rel
+                await _ingest_one(
+                    file_path=file_path,
+                    repo_root=repo_root,
+                    collection=collection,
+                    source_prefix=source_prefix,
+                    git_sha=git_sha,
+                    label=label,
+                    force=False,
+                    existing=existing,
+                    store=store,
+                    stats=stats,
+                )
+                if stats.ingested:
+                    console.print(
+                        f"  [green]+[/green] {source}  "
+                        f"[dim]({stats.total_chunks} chunks total this batch)[/dim]"
+                    )
+                    stats.ingested = 0
+                    stats.total_chunks = 0
+    except KeyboardInterrupt:
+        console.print("\n[dim]watch interrupted[/dim]")
+    finally:
+        await shutdown_embedder()
+        await shutdown_store()
+
+
 @app.command("recall")
 def recall_cmd(
     query: Annotated[str, typer.Argument(help="Natural-language query.")],
@@ -404,6 +717,28 @@ def recall_cmd(
     score_threshold: Annotated[
         float | None,
         typer.Option("--score-threshold", "-s", help="Drop hits below this cosine score (0..1)."),
+    ] = None,
+    context_window: Annotated[
+        int,
+        typer.Option(
+            "--context-window",
+            "-w",
+            help="Fetch +/- N sibling chunks per hit (same source) and merge them into one block.",
+        ),
+    ] = 0,
+    group_by_source: Annotated[
+        bool,
+        typer.Option(
+            "--group-by-source/--no-group-by-source",
+            help="Keep at most one hit per source (the highest-scoring one).",
+        ),
+    ] = False,
+    mmr_lambda: Annotated[
+        float | None,
+        typer.Option(
+            "--mmr",
+            help="Re-rank candidates by MMR diversity. Typical: 0.5 - 0.8. Lower = more diverse.",
+        ),
     ] = None,
     full: Annotated[bool, typer.Option("--full", help="Print full chunk text instead of truncating.")] = False,
 ) -> None:
@@ -416,19 +751,24 @@ def recall_cmd(
                 collection=collection,
                 top_k=top_k,
                 score_threshold=score_threshold,
+                context_window=context_window,
+                group_by_source=group_by_source,
+                mmr_lambda=mmr_lambda,
             )
             if not hits:
                 console.print("[dim]No hits.[/dim]")
                 return
             for i, hit in enumerate(hits, 1):
-                meta = hit["metadata"]
-                src = meta.get("source") or meta.get("file_path") or "?"
-                ordinal = meta.get("chunk_ordinal", "?")
-                chunk_count = meta.get("chunk_count", "?")
+                extra = hit.get("extra_metadata") or {}
+                src = hit.get("source") or extra.get("file_path") or "?"
+                ordinal = hit.get("chunk_ordinal", "?")
+                chunk_count = hit.get("chunk_count", "?")
+                lines = hit.get("lines")
+                location = f"{src}:{lines}" if lines else src
                 console.print(
                     f"[bold cyan]#{i}[/bold cyan] "
                     f"[yellow]{hit['score']:.3f}[/yellow]  "
-                    f"[dim]{src}  (chunk {ordinal}/{chunk_count})[/dim]"
+                    f"[dim]{location}  (chunk {ordinal}/{chunk_count})[/dim]"
                 )
                 text = hit["text"]
                 if not full and len(text) > 400:
@@ -476,6 +816,95 @@ def collections_cmd() -> None:
             await shutdown_store()
 
     asyncio.run(_go())
+
+
+@app.command("recall-log")
+def recall_log_cmd(
+    since: Annotated[
+        str | None,
+        typer.Option(
+            "--since",
+            help='Only show events newer than e.g. "1h", "30m", "2d", "10s".',
+        ),
+    ] = None,
+    top: Annotated[
+        int,
+        typer.Option("--top", "-n", help="Limit to the N most recent events."),
+    ] = 20,
+    path: Annotated[
+        Path | None,
+        typer.Option(
+            "--path",
+            help="Override recall log path (defaults to config.recall_log_path).",
+        ),
+    ] = None,
+) -> None:
+    """Tail the recall analytics log.
+
+    Each ``recall`` call writes a JSONL event with the query, mode, top_k,
+    latency, and the top hits. Use this to audit what an MCP client has
+    been asking, find slow queries, or spot recall misses.
+    """
+    settings = get_settings()
+    log_path = Path(path) if path else Path(settings.recall_log_path)
+    if not log_path.exists():
+        console.print(f"[dim]No recall log at {log_path}[/dim]")
+        return
+
+    since_seconds: float | None = None
+    if since:
+        suffixes = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+        unit = since[-1].lower()
+        try:
+            qty = float(since[:-1]) if unit in suffixes else float(since)
+            since_seconds = qty * suffixes.get(unit, 1)
+        except ValueError:
+            console.print(f"[red]bad --since value: {since}[/red]")
+            raise typer.Exit(code=1) from None
+
+    from datetime import datetime as _dt
+
+    cutoff_ts: float | None = None
+    if since_seconds is not None:
+        cutoff_ts = _dt.now().timestamp() - since_seconds
+
+    events: list[dict] = []
+    for event in analytics.iter_log_events(log_path):
+        if cutoff_ts is not None:
+            ts = event.get("ts")
+            if not isinstance(ts, str):
+                continue
+            try:
+                event_ts = _dt.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                continue
+            if event_ts < cutoff_ts:
+                continue
+        events.append(event)
+
+    events = events[-top:]
+    if not events:
+        console.print("[dim](no events)[/dim]")
+        return
+
+    for event in events:
+        ts = event.get("ts", "?")
+        query = event.get("query", "")
+        collection = event.get("collection", "")
+        mode = event.get("mode", "")
+        latency = event.get("latency_ms")
+        hits = event.get("hits") or []
+        header = f"[cyan]{ts}[/cyan] [dim]{collection}[/dim] [{mode}]"
+        if latency is not None:
+            header += f" [dim]{latency:.0f}ms[/dim]"
+        console.print(header)
+        console.print(f"  q: {query!r}")
+        for hit in hits[:3]:
+            console.print(
+                f"    - [yellow]{hit.get('score', 0):.3f}[/yellow]"
+                f" {hit.get('source', '<no source>')}"
+                f" [dim]({hit.get('id', '?')[:8]})[/dim]"
+            )
 
 
 @app.command("serve")
