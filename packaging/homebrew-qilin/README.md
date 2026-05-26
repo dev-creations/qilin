@@ -52,6 +52,18 @@ Each upstream release publishes a `checksums.txt` alongside the archives. The ca
 shasum -a 256 -c checksums.txt
 ```
 
+## macOS Gatekeeper
+
+The release pipeline ad-hoc signs the macOS binaries with [`rcodesign`](https://github.com/indygreg/apple-platform-rs), and the cask's post-install hook removes the `com.apple.quarantine` xattr, so `qilin --version` should work straight after `brew install --cask qilin` on every modern macOS.
+
+If you still see Apple's "Apple cannot verify that this binary is free of malware..." dialog (for example after extracting a tarball from the GitHub release page by hand), clear the quarantine attribute yourself:
+
+```bash
+xattr -dr com.apple.quarantine "$(command -v qilin)"
+```
+
+The cask is not yet notarized with an Apple Developer ID — moving to full notarization is tracked upstream and requires paid Apple Developer Program membership.
+
 ## Reporting issues
 
 - Bugs in the `qilin` CLI itself → [dev-creations/qilin/issues](https://github.com/dev-creations/qilin/issues)

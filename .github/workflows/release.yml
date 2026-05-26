@@ -26,6 +26,27 @@ jobs:
           go-version-file: cli/go.mod
           cache-dependency-path: cli/go.sum
 
+      - name: Install rcodesign
+        # Cross-compiled Mach-O binaries from Linux carry no code signature,
+        # which on Apple Silicon means the kernel refuses to execute them
+        # and on Intel triggers Gatekeeper's "Apple cannot verify..."
+        # dialog. We ad-hoc sign each darwin binary via a goreleaser
+        # post-build hook (cli/scripts/codesign-darwin.sh) using rcodesign,
+        # a Rust reimplementation of Apple's codesign that runs on Linux.
+        # Pinned to a specific version for reproducibility; bump in lockstep
+        # with the project when needed.
+        env:
+          RCODESIGN_VERSION: "0.29.0"
+        run: |
+          set -euo pipefail
+          asset="apple-codesign-${RCODESIGN_VERSION}-x86_64-unknown-linux-musl"
+          url="https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%2F${RCODESIGN_VERSION}/${asset}.tar.gz"
+          tmp="$(mktemp -d)"
+          curl -fsSL --retry 3 "$url" | tar -xz -C "$tmp"
+          sudo install -m 0755 "${tmp}/${asset}/rcodesign" /usr/local/bin/rcodesign
+          rm -rf "$tmp"
+          rcodesign --version
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:

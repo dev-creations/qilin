@@ -69,6 +69,18 @@ sudo mv qilin /usr/local/bin/
 
 Brew tap (`brew install dev-creations/qilin/qilin`) and Scoop bucket support are wired into the release pipeline; they will be enabled once the tap/bucket repos exist.
 
+#### macOS: "Apple cannot verify..." dialog
+
+The release pipeline ad-hoc signs the macOS binaries with [`rcodesign`](https://github.com/indygreg/apple-platform-rs), and both the Homebrew cask and the `install.sh` script strip the `com.apple.quarantine` xattr after install, so a normal `brew install --cask qilin` or `curl ... | sh` should let `qilin --version` run cleanly.
+
+If you downloaded a release tarball manually (or hit the Gatekeeper dialog anyway because of a macOS update), clear the quarantine attribute yourself:
+
+```bash
+xattr -dr com.apple.quarantine "$(command -v qilin)"
+```
+
+The binary is not yet signed with an Apple Developer ID, so notarization-style Gatekeeper checks won't pass silently for manually-downloaded archives. The `xattr` workaround is the same one [recommended upstream by GoReleaser](https://goreleaser.com/customization/homebrew_casks/#signing-and-notarizing) for unsigned distributions.
+
 ## Quick start
 
 ```bash
