@@ -44,6 +44,15 @@ No cloning, no editing `.env` files, no hand-rolling docker-compose.
 
 ### macOS / Linux
 
+using brew:
+
+```bash
+brew tap dev-creations/qilin
+brew install --cask qilin
+```
+
+Or manually download using curl.
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/dev-creations/qilin/main/scripts/install.sh | sh
 ```
@@ -51,6 +60,15 @@ curl -fsSL https://raw.githubusercontent.com/dev-creations/qilin/main/scripts/in
 The installer detects your OS/arch, downloads the matching release binary from GitHub, verifies its SHA-256 against `checksums.txt`, and drops `qilin` into `/usr/local/bin` (or `~/.local/bin` without sudo).
 
 ### Windows (PowerShell)
+
+using scoop:
+
+```bash
+scoop bucket add qilin https://github.com/dev-creations/scoop-qilin
+scoop install qilin
+```
+
+Or manually download using powershell.
 
 ```powershell
 irm https://raw.githubusercontent.com/dev-creations/qilin/main/scripts/install.ps1 | iex
