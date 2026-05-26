@@ -33,7 +33,11 @@ jobs:
           workdir: cli
           args: release --clean
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # TAP_GITHUB_TOKEN is a PAT (or GitHub App installation token) with
+          # `contents: write` on this repo plus dev-creations/homebrew-qilin and
+          # dev-creations/scoop-qilin. GoReleaser uses it to create the GitHub
+          # release here and to commit the formula/manifest to the tap repos.
+          GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
 
   release-image:
     name: Build & push qilin-mcp image

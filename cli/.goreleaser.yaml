@@ -84,22 +84,23 @@ changelog:
       - "^test:"
       - "^chore:"
 
-# Brew tap + Scoop bucket configs are kept here so flipping them on later is a
-# one-line change (skip_upload: false + create the tap/bucket repos). Until
-# then they only generate the formula/manifest locally.
-homebrew_casks:
+# Homebrew formula tap + Scoop bucket. Both are published on every `v*` tag;
+# the release workflow needs a PAT/App token (TAP_GITHUB_TOKEN) with
+# `contents: write` on dev-creations/homebrew-qilin and dev-creations/scoop-qilin.
+brews:
   - name: qilin
     repository:
       owner: dev-creations
       name: homebrew-qilin
       branch: main
-    directory: Casks
+    directory: Formula
     homepage: https://github.com/dev-creations/qilin
     description: Plug-and-play vector memory exposed over MCP/SSE.
     license: MIT
-    binaries:
-      - qilin
-    skip_upload: "true" # flip to false (or remove) once the tap repo exists
+    install: |
+      bin.install "qilin"
+    test: |
+      assert_match "qilin", shell_output("#{bin}/qilin --version")
 
 scoops:
   - name: qilin
@@ -107,10 +108,10 @@ scoops:
       owner: dev-creations
       name: scoop-qilin
       branch: main
+    directory: bucket
     homepage: https://github.com/dev-creations/qilin
     description: Plug-and-play vector memory exposed over MCP/SSE.
     license: MIT
-    skip_upload: "true" # flip once the scoop bucket repo exists
 
 release:
   github:
