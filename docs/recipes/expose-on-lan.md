@@ -113,6 +113,7 @@ Add the `Authorization` header to whatever client config you use. Cursor's
 (See [streamable-http](#streamable-http) below for the `/mcp` URL.)
 
 <a id="streamable-http"></a>
+
 ## 6. Streamable HTTP transport
 
 Qilin mounts FastMCP's streamable-HTTP app at `/mcp` alongside the existing
