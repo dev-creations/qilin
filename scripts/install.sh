@@ -131,6 +131,21 @@ main() {
         sudo install -m 0755 "$bin_src" "${bin_dir}/qilin"
     fi
 
+    # On macOS, `curl` (and the `tar` step above) inherit the
+    # `com.apple.quarantine` xattr from the downloaded tarball. Left in
+    # place, Gatekeeper would refuse to launch the binary with the
+    # "Apple cannot verify..." dialog on first run. The release build
+    # ad-hoc signs darwin binaries via rcodesign, so removing quarantine
+    # here is the second half of getting `qilin --version` to work
+    # cleanly without an Apple Developer ID + notarization.
+    if [ "$os" = "darwin" ] && command -v xattr >/dev/null 2>&1; then
+        if [ -w "${bin_dir}/qilin" ]; then
+            xattr -d com.apple.quarantine "${bin_dir}/qilin" 2>/dev/null || true
+        else
+            sudo xattr -d com.apple.quarantine "${bin_dir}/qilin" 2>/dev/null || true
+        fi
+    fi
+
     info "installed to ${bin_dir}/qilin"
 
     case ":$PATH:" in

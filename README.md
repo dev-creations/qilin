@@ -44,6 +44,15 @@ No cloning, no editing `.env` files, no hand-rolling docker-compose.
 
 ### macOS / Linux
 
+using brew:
+
+```bash
+brew tap dev-creations/qilin
+brew install --cask qilin
+```
+
+Or manually download using curl.
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/dev-creations/qilin/main/scripts/install.sh | sh
 ```
@@ -51,6 +60,15 @@ curl -fsSL https://raw.githubusercontent.com/dev-creations/qilin/main/scripts/in
 The installer detects your OS/arch, downloads the matching release binary from GitHub, verifies its SHA-256 against `checksums.txt`, and drops `qilin` into `/usr/local/bin` (or `~/.local/bin` without sudo).
 
 ### Windows (PowerShell)
+
+using scoop:
+
+```bash
+scoop bucket add qilin https://github.com/dev-creations/scoop-qilin
+scoop install qilin
+```
+
+Or manually download using powershell.
 
 ```powershell
 irm https://raw.githubusercontent.com/dev-creations/qilin/main/scripts/install.ps1 | iex
@@ -68,6 +86,18 @@ sudo mv qilin /usr/local/bin/
 ```
 
 Brew tap (`brew install dev-creations/qilin/qilin`) and Scoop bucket support are wired into the release pipeline; they will be enabled once the tap/bucket repos exist.
+
+#### macOS: "Apple cannot verify..." dialog
+
+The release pipeline ad-hoc signs the macOS binaries with [`rcodesign`](https://github.com/indygreg/apple-platform-rs), and both the Homebrew cask and the `install.sh` script strip the `com.apple.quarantine` xattr after install, so a normal `brew install --cask qilin` or `curl ... | sh` should let `qilin --version` run cleanly.
+
+If you downloaded a release tarball manually (or hit the Gatekeeper dialog anyway because of a macOS update), clear the quarantine attribute yourself:
+
+```bash
+xattr -dr com.apple.quarantine "$(command -v qilin)"
+```
+
+The binary is not yet signed with an Apple Developer ID, so notarization-style Gatekeeper checks won't pass silently for manually-downloaded archives. The `xattr` workaround is the same one [recommended upstream by GoReleaser](https://goreleaser.com/customization/homebrew_casks/#signing-and-notarizing) for unsigned distributions.
 
 ## Quick start
 

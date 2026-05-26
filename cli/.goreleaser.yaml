@@ -38,6 +38,21 @@ builds:
       - -X github.com/dev-creations/qilin/cli/internal/version.Version={{.Version}}
       - -X github.com/dev-creations/qilin/cli/internal/version.Commit={{.FullCommit}}
       - -X github.com/dev-creations/qilin/cli/internal/version.Date={{.Date}}
+    hooks:
+      # Cross-compiled-from-Linux Mach-O binaries have no code signature at
+      # all. On Apple Silicon the kernel kills any arm64 binary that lacks
+      # at least an ad-hoc signature, and Gatekeeper rejects the rest with
+      # the "Apple cannot verify..." dialog. We can't fully fix this without
+      # an Apple Developer ID + notarization (paid), but we can ad-hoc sign
+      # every darwin binary using rcodesign (a Rust reimplementation of
+      # Apple's codesign that runs on Linux). The wrapper script no-ops for
+      # non-darwin targets so the hook is safe across the whole matrix.
+      #
+      # rcodesign is installed by the release workflow before goreleaser
+      # runs; for local snapshot builds the script gracefully skips signing
+      # if rcodesign isn't on $PATH.
+      post:
+        - ./scripts/codesign-darwin.sh {{ .Os }} {{ .Path }}
 
 archives:
   - id: qilin
@@ -105,6 +120,26 @@ homebrew_casks:
     license: MIT
     binaries:
       - qilin
+    # Strip the `com.apple.quarantine` xattr that LaunchServices stamps onto
+    # every downloaded file. Without this, macOS 15+ will pop the
+    # "Apple cannot verify that this binary is free of malware..."
+    # Gatekeeper dialog the first time the user runs `qilin`, even though
+    # brew installed the cask. Combined with the ad-hoc sign we apply in
+    # the build hook above, this makes `qilin --version` work cleanly
+    # after `brew install --cask qilin`.
+    #
+    # This is the workaround officially recommended by goreleaser for
+    # projects that can't afford an Apple Developer ID + notarization
+    # ($99/year). The "proper" fix is to drop this hook and add a
+    # `notarize:` block once a Developer ID is available; see
+    # https://goreleaser.com/customization/homebrew_casks/#signing-and-notarizing.
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr",
+                           args: ["-dr", "com.apple.quarantine", "#{staged_path}/qilin"]
+          end
 
 scoops:
   - name: qilin
