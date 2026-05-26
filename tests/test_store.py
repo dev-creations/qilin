@@ -118,6 +118,90 @@ class TestBuildPayload:
         )
         assert payload["text"] == "hello"
 
+    def test_includes_line_spans_when_provided(self) -> None:
+        payload = build_payload(
+            chunk_text="hello",
+            chunk_ordinal=0,
+            chunk_count=1,
+            document_hash="abc",
+            source="src.md",
+            extra=None,
+            start_line=12,
+            end_line=34,
+        )
+        assert payload["start_line"] == 12
+        assert payload["end_line"] == 34
+
+    def test_omits_line_spans_when_missing(self) -> None:
+        payload = build_payload(
+            chunk_text="hello",
+            chunk_ordinal=0,
+            chunk_count=1,
+            document_hash="abc",
+            source="src.md",
+            extra=None,
+        )
+        assert "start_line" not in payload
+        assert "end_line" not in payload
+
+    def test_writes_defines_imports_signature_language(self) -> None:
+        payload = build_payload(
+            chunk_text="t",
+            chunk_ordinal=0,
+            chunk_count=1,
+            document_hash="abc",
+            source="x.py",
+            extra=None,
+            defines=("foo", "Bar"),
+            imports=["import os"],
+            signature="def foo():",
+            language="python",
+        )
+        assert payload["defines"] == ["foo", "Bar"]
+        assert payload["imports"] == ["import os"]
+        assert payload["signature"] == "def foo():"
+        assert payload["language"] == "python"
+
+    def test_omits_optional_code_fields_when_empty(self) -> None:
+        payload = build_payload(
+            chunk_text="t",
+            chunk_ordinal=0,
+            chunk_count=1,
+            document_hash="abc",
+            source="x.md",
+            extra=None,
+        )
+        assert "defines" not in payload
+        assert "imports" not in payload
+        assert "signature" not in payload
+        assert "language" not in payload
+
+    def test_extra_does_not_overwrite_language(self) -> None:
+        payload = build_payload(
+            chunk_text="t",
+            chunk_ordinal=0,
+            chunk_count=1,
+            document_hash="abc",
+            source="x.py",
+            extra={"language": "ignored"},
+            language="python",
+        )
+        assert payload["language"] == "python"
+
+    def test_extra_does_not_overwrite_line_spans(self) -> None:
+        payload = build_payload(
+            chunk_text="hello",
+            chunk_ordinal=0,
+            chunk_count=1,
+            document_hash="abc",
+            source="src.md",
+            extra={"start_line": 999, "end_line": 999},
+            start_line=1,
+            end_line=5,
+        )
+        assert payload["start_line"] == 1
+        assert payload["end_line"] == 5
+
 
 class TestBuildFilter:
     def test_none_returns_none(self) -> None:
@@ -161,7 +245,8 @@ class TestVectorStore:
         await store.ensure_collection("coll")
 
         assert client.create_collection.await_count == 1
-        assert client.create_payload_index.await_count == 2
+        # source, document_hash, defines, language => 4 payload indexes
+        assert client.create_payload_index.await_count == 4
 
     @pytest.mark.asyncio
     async def test_ensure_collection_skips_create_when_exists(self, mock_async_client) -> None:
@@ -245,6 +330,57 @@ class TestVectorStore:
 
         with pytest.raises(UnexpectedResponse):
             await store.search("c", [0.1])
+
+    @pytest.mark.asyncio
+    async def test_search_returns_vector_when_requested(self, mock_async_client) -> None:
+        client, _ = mock_async_client
+        client.query_points.return_value = SimpleNamespace(
+            points=[
+                SimpleNamespace(
+                    id="pid",
+                    score=0.9,
+                    payload={"text": "hi"},
+                    vector=[0.1, 0.2, 0.3],
+                ),
+            ]
+        )
+        store = VectorStore()
+
+        hits = await store.search("c", [0.1, 0.2, 0.3], with_vectors=True)
+
+        assert hits[0].vector == [pytest.approx(0.1), pytest.approx(0.2), pytest.approx(0.3)]
+        kwargs = client.query_points.await_args.kwargs
+        assert kwargs["with_vectors"] is True
+
+    @pytest.mark.asyncio
+    async def test_search_named_vector_response_picks_dense(self, mock_async_client) -> None:
+        client, _ = mock_async_client
+        client.query_points.return_value = SimpleNamespace(
+            points=[
+                SimpleNamespace(
+                    id="pid",
+                    score=0.9,
+                    payload={"text": "hi"},
+                    vector={"dense": [0.5, 0.6], "bm25": [9.0]},
+                ),
+            ]
+        )
+        store = VectorStore()
+
+        hits = await store.search("c", [0.1], with_vectors=True)
+
+        assert hits[0].vector == [pytest.approx(0.5), pytest.approx(0.6)]
+
+    @pytest.mark.asyncio
+    async def test_search_default_does_not_request_vectors(self, mock_async_client) -> None:
+        client, _ = mock_async_client
+        client.query_points.return_value = SimpleNamespace(points=[])
+        store = VectorStore()
+
+        await store.search("c", [0.1])
+
+        kwargs = client.query_points.await_args.kwargs
+        assert kwargs["with_vectors"] is False
 
     @pytest.mark.asyncio
     async def test_search_with_filter_and_threshold(self, mock_async_client) -> None:
@@ -424,6 +560,93 @@ class TestVectorStore:
         store = VectorStore()
         await store.aclose()
         client.close.assert_awaited_once()
+
+
+class TestBumpFeedback:
+    @pytest.mark.asyncio
+    async def test_bumps_existing_feedback(self, mock_async_client) -> None:
+        client, _ = mock_async_client
+        client.retrieve.return_value = [
+            SimpleNamespace(payload={"feedback": 2, "source": "f"})
+        ]
+        store = VectorStore()
+        new_value = await store.bump_feedback("memory", "pid", 1)
+        assert new_value == 3
+        client.set_payload.assert_awaited_once()
+        kwargs = client.set_payload.await_args.kwargs
+        assert kwargs["payload"] == {"feedback": 3}
+        assert kwargs["points"] == ["pid"]
+
+    @pytest.mark.asyncio
+    async def test_initializes_when_missing(self, mock_async_client) -> None:
+        client, _ = mock_async_client
+        client.retrieve.return_value = [SimpleNamespace(payload={})]
+        store = VectorStore()
+        new_value = await store.bump_feedback("memory", "pid", -1)
+        assert new_value == -1
+
+    @pytest.mark.asyncio
+    async def test_returns_zero_on_missing_point(self, mock_async_client) -> None:
+        client, _ = mock_async_client
+        client.retrieve.return_value = []
+        store = VectorStore()
+        assert await store.bump_feedback("memory", "pid", 1) == 0
+        client.set_payload.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_returns_zero_on_404_collection(self, mock_async_client) -> None:
+        client, _ = mock_async_client
+        client.retrieve.side_effect = _make_unexpected_response(404)
+        store = VectorStore()
+        assert await store.bump_feedback("memory", "pid", 1) == 0
+
+
+class TestSweepExpired:
+    @pytest.mark.asyncio
+    async def test_returns_zero_when_collection_absent(
+        self, mock_async_client
+    ) -> None:
+        client, _ = mock_async_client
+        client.collection_exists.return_value = False
+        store = VectorStore()
+        out = await store.sweep_expired("memory", now_iso="2026-05-26T10:00:00+00:00")
+        assert out == 0
+        client.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_skips_delete_when_nothing_expired(
+        self, mock_async_client
+    ) -> None:
+        client, _ = mock_async_client
+        client.collection_exists.return_value = True
+        client.count.return_value = SimpleNamespace(count=0)
+        store = VectorStore()
+        out = await store.sweep_expired("memory", now_iso="2026-05-26T10:00:00+00:00")
+        assert out == 0
+        client.delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_deletes_expired_with_datetime_filter(
+        self, mock_async_client
+    ) -> None:
+        client, _ = mock_async_client
+        client.collection_exists.return_value = True
+        client.count.return_value = SimpleNamespace(count=7)
+        store = VectorStore()
+        now = "2026-05-26T10:00:00+00:00"
+
+        out = await store.sweep_expired("memory", now_iso=now)
+        assert out == 7
+
+        client.delete.assert_awaited_once()
+        selector = client.delete.await_args.kwargs["points_selector"]
+        assert isinstance(selector, qm.FilterSelector)
+        cond = selector.filter.must[0]
+        assert isinstance(cond, qm.FieldCondition)
+        assert cond.key == "expires_at"
+        assert isinstance(cond.range, qm.DatetimeRange)
+        from datetime import datetime as _dt
+        assert _dt.fromisoformat(now) == cond.range.lt
 
 
 class TestProcessSingletons:

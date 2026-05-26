@@ -29,6 +29,8 @@ def test_chunk_text_short_input_yields_single_chunk() -> None:
     assert chunks[0].ordinal == 0
     assert chunks[0].token_count > 0
     assert "short paragraph" in chunks[0].text
+    assert chunks[0].start_line == 1
+    assert chunks[0].end_line == 1
 
 
 def test_chunk_text_long_input_splits_into_multiple_chunks() -> None:
@@ -106,3 +108,59 @@ def test_chunk_text_respects_size_parameter(size: int, overlap: int) -> None:
     assert chunks
     for chunk in chunks:
         assert chunk.token_count > 0
+
+
+class TestLineSpans:
+    def test_single_line_input_spans_one(self) -> None:
+        chunks = chunk_text("one liner.")
+
+        assert len(chunks) == 1
+        assert chunks[0].start_line == 1
+        assert chunks[0].end_line == 1
+
+    def test_multi_line_paragraph_spans_full_range(self) -> None:
+        text = "line one\nline two\nline three"
+
+        chunks = chunk_text(text)
+
+        assert len(chunks) == 1
+        assert chunks[0].start_line == 1
+        assert chunks[0].end_line == 3
+
+    def test_two_paragraphs_packed_into_one_chunk(self) -> None:
+        text = "first para.\n\nsecond para."
+
+        chunks = chunk_text(text)
+
+        assert len(chunks) == 1
+        assert chunks[0].start_line == 1
+        assert chunks[0].end_line == 3
+
+    def test_paragraph_after_leading_blank_lines(self) -> None:
+        text = "\n\n\nactual content here.\nmore content."
+
+        chunks = chunk_text(text)
+
+        assert len(chunks) == 1
+        assert chunks[0].start_line == 4
+        assert chunks[0].end_line == 5
+
+    def test_chunks_carry_disjoint_or_adjacent_line_ranges(self) -> None:
+        paragraphs = [f"paragraph number {i} with several words " * 30 for i in range(5)]
+        text = "\n\n".join(paragraphs)
+
+        chunks = chunk_text(text, chunk_size_tokens=80, chunk_overlap_tokens=0)
+
+        assert len(chunks) >= 2
+        for chunk in chunks:
+            assert chunk.start_line >= 1
+            assert chunk.end_line >= chunk.start_line
+
+    def test_crlf_line_numbering_matches_normalized_lines(self) -> None:
+        text = "first\r\n\r\nsecond\r\nthird"
+
+        chunks = chunk_text(text)
+
+        assert len(chunks) == 1
+        assert chunks[0].start_line == 1
+        assert chunks[0].end_line == 4
