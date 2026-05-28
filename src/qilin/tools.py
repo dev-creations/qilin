@@ -862,6 +862,94 @@ async def list_collections() -> list[str]:
     return await store.list_collections()
 
 
+def infer_branch_collections(
+    collections: list[str],
+    *,
+    branch_collection_position: str,
+) -> dict[str, Any]:
+    """Group collection names by inferred branch token.
+
+    Branch inference is heuristic because original branch names are sanitized
+    for collection naming and may not be perfectly reversible.
+    """
+    grouped: dict[str, dict[str, Any]] = {}
+    unknown: list[str] = []
+    base_candidates: set[str] = set()
+    for name in collections:
+        parts = name.split("-")
+        if len(parts) >= 2:
+            if branch_collection_position == "prefix":
+                base_candidates.add(parts[-1])
+            else:
+                base_candidates.add(parts[0])
+
+    for name in collections:
+        branch_token: str | None = None
+        if branch_collection_position == "prefix":
+            matched_base = None
+            for candidate in sorted(base_candidates, key=len, reverse=True):
+                suffix = f"-{candidate}"
+                if name.endswith(suffix):
+                    matched_base = candidate
+                    break
+            if matched_base is not None:
+                branch_token = name[: -(len(matched_base) + 1)]
+        else:
+            matched_base = None
+            for candidate in sorted(base_candidates, key=len, reverse=True):
+                prefix = f"{candidate}-"
+                if name.startswith(prefix):
+                    matched_base = candidate
+                    break
+            if matched_base is not None:
+                branch_token = name[len(matched_base) + 1 :]
+
+        if not branch_token or branch_token in {"project"}:
+            unknown.append(name)
+            continue
+
+        entry = grouped.setdefault(
+            branch_token,
+            {
+                "branch_name": branch_token,
+                "sanitized_branch": branch_token,
+                "collections": [],
+                "parse_confidence": "heuristic",
+                "source": "collection_name",
+            },
+        )
+        entry["collections"].append(name)
+
+    branches = sorted(grouped.values(), key=lambda item: item["branch_name"])
+    for item in branches:
+        item["collections"].sort()
+    unknown.sort()
+    return {"branches": branches, "unknown_collections": unknown}
+
+
+async def list_sources(collection: str | None = None) -> list[dict[str, Any]]:
+    """Return source manifests for curation dashboards."""
+    collection_name = _resolve_collection(collection)
+    store = await get_store()
+    grouped = await store.scan_sources(collection_name)
+    rows: list[dict[str, Any]] = []
+    for source, variants in grouped.items():
+        chunk_count = sum(int(v.get("chunk_count", 0) or 0) for v in variants)
+        ids: list[str] = []
+        for variant in variants:
+            ids.extend(str(point_id) for point_id in variant.get("ids", []))
+        rows.append(
+            {
+                "source": source,
+                "chunk_count": chunk_count,
+                "variant_count": len(variants),
+                "ids": ids,
+            }
+        )
+    rows.sort(key=lambda item: item["source"])
+    return rows
+
+
 async def create_collection(name: str) -> dict[str, Any]:
     """Create a new collection. Idempotent: succeeds even if it already exists."""
     if not name or not name.strip():

@@ -195,6 +195,13 @@ class Settings(BaseSettings):
             "the existing ``/sse`` endpoint. Newer MCP clients prefer this."
         ),
     )
+    dashboard_enabled: bool = Field(
+        default=True,
+        description=(
+            "Enable the built-in developer dashboard routes under ``/dashboard`` "
+            "and ``/dashboard/api/*``."
+        ),
+    )
     ttl_sweep_seconds: int = Field(
         default=300,
         ge=10,

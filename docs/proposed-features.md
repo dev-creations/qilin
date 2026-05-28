@@ -35,48 +35,6 @@ We propose introducing a pluggable embedding interface supporting external APIs 
 ---
 
 
-
-## 4. Local Developer UI & Test Bench
-
-### Concept
-Qdrant provides a default database dashboard at `http://localhost:6333/dashboard`, but it is generic and shows raw payloads/vectors. Developers using Qilin want to understand *how* their code is chunked, *what* chunks are matched for a query, and *why* specific files are prioritized.
-
-We propose embedding a sleek, lightweight **Qilin Dev Dashboard** inside the Python MCP server.
-
-```
-+-----------------------------------------------------------+
-| QILIN DEV DASHBOARD                              [Status] |
-+-----------------------------------------------------------+
-|  Collections  |  Test Bench  |  Feedback Log  |  Settings |
-+-----------------------------------------------------------+
-| Query: "How does authenticate_user handle tokens?"        |
-| Mode: [Hybrid v]  Rerank: [Yes v]  Top-K: [5 ]   [Search] |
-+-----------------------------------------------------------+
-| Hits:                                                     |
-| [1] auth.py:L40-80  (Score: 0.92)                 [Delete]|
-|     "def authenticate_user(token):..."                    |
-|                                                           |
-| [2] jwt.py:L12-30   (Score: 0.81)                 [Delete]|
-|     "class TokenHandler:..."                              |
-+-----------------------------------------------------------+
-```
-
-### Proposed Changes
-
-* **Dashboard Web App**:
-  * Create a single-page app (React/Svelte or Tailwind-styled vanilla JS) served via a `/dashboard` HTTP endpoint.
-  * FastMCP/FastAPI can serve this static directory when enabled.
-* **Interactive Tooling**:
-  * **Test Bench**: Input query strings, adjust parameters (`score_threshold`, `mmr_lambda`, `mode`), and inspect the returned source code blocks, similarity scores, and BM25 sparse weights side-by-side.
-  * **Memory Curator**: View and delete specific file chunks or manually label memories.
-  * **Visual Feedback Viewer**: Displays recall history and analytics (`~/.qilin/logs/recall.jsonl`) to track what queries the AI client is executing.
-
-### Developer Value
-* **Greatly improved visibility**: Devs can immediately debug why their IDE is or isn't seeing certain codebase memories.
-* **Interactive tuning**: Instantly test search parameters without editing JSON configs.
-
----
-
 ## 5. IDE Integrations (VS Code & JetBrains Extensions)
 
 ### Concept

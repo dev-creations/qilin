@@ -9,21 +9,25 @@ The resulting ASGI ``app`` is launched by ``scripts/entrypoint.sh`` via
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
-from starlette.responses import JSONResponse
+from starlette.requests import Request
+from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from starlette.routing import Mount, Route
 
 from . import __version__, tools
 from .auth import BearerAuthMiddleware
 from .config import get_settings
+from .dashboard_assets import APP_JS, INDEX_HTML, STYLES_CSS
 from .embeddings import get_embedder, shutdown_embedder
 from .reranker import shutdown_reranker
 from .sparse import shutdown_sparse
@@ -275,6 +279,96 @@ async def _root(request) -> JSONResponse:
     )
 
 
+async def _dashboard_page(request: Request) -> HTMLResponse:
+    return HTMLResponse(INDEX_HTML)
+
+
+async def _dashboard_js(request: Request) -> PlainTextResponse:
+    return PlainTextResponse(APP_JS, media_type="application/javascript")
+
+
+async def _dashboard_css(request: Request) -> PlainTextResponse:
+    return PlainTextResponse(STYLES_CSS, media_type="text/css")
+
+
+async def _dashboard_search(request: Request) -> JSONResponse:
+    payload = await request.json()
+    hits = await tools.recall(
+        query=str(payload.get("query", "")),
+        collection=payload.get("collection"),
+        top_k=int(payload.get("top_k", 5)),
+        score_threshold=payload.get("score_threshold"),
+        mmr_lambda=payload.get("mmr_lambda"),
+        mode=payload.get("mode"),
+        rerank=payload.get("rerank"),
+        git_branch=payload.get("git_branch"),
+        fallback_strategy=payload.get("fallback_strategy"),
+    )
+    return JSONResponse({"hits": hits})
+
+
+async def _dashboard_branches(request: Request) -> JSONResponse:
+    settings = get_settings()
+    collections = await tools.list_collections()
+    mapped = tools.infer_branch_collections(
+        collections,
+        branch_collection_position=settings.branch_collection_position,
+    )
+    return JSONResponse(mapped)
+
+
+async def _dashboard_sources(request: Request) -> JSONResponse:
+    collection = request.query_params.get("collection")
+    sources = await tools.list_sources(collection=collection)
+    return JSONResponse({"sources": sources})
+
+
+async def _dashboard_delete_source(request: Request) -> JSONResponse:
+    payload = await request.json()
+    source = payload.get("source")
+    collection = payload.get("collection")
+    if not source:
+        return JSONResponse({"deleted": 0, "error": "source required"}, status_code=400)
+    deleted = await tools.forget(collection=collection, filter={"source": source})
+    return JSONResponse(deleted)
+
+
+def _read_feedback_entries(limit: int = 50) -> list[dict[str, Any]]:
+    settings = get_settings()
+    if settings.recall_log_path == "":
+        return []
+    log_path = settings.recall_log_path or "~/.qilin/logs/recall.jsonl"
+    resolved = Path(log_path).expanduser()
+    if not resolved.exists():
+        return []
+    entries: list[dict[str, Any]] = []
+    for line in resolved.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        entries.append(
+            {
+                "timestamp": item.get("ts"),
+                "query": item.get("query"),
+                "collection": item.get("collection"),
+                "top_k": item.get("top_k"),
+                "mode": item.get("mode"),
+                "latency_ms": item.get("latency_ms"),
+                "hits": item.get("hits"),
+            }
+        )
+    return entries[-limit:]
+
+
+async def _dashboard_feedback(request: Request) -> JSONResponse:
+    limit_raw = request.query_params.get("limit")
+    limit = int(limit_raw) if limit_raw else 50
+    return JSONResponse({"entries": _read_feedback_entries(limit=max(1, min(limit, 500)))})
+
+
 async def _ttl_sweep_loop(stop_event: asyncio.Event) -> None:
     """Periodically delete expired chunks from collections with ``ttl_seconds`` set.
 
@@ -352,6 +446,23 @@ def _build_app() -> Starlette:
         Route("/", _root, methods=["GET"]),
         Route("/healthz", _healthz, methods=["GET"]),
     ]
+    if settings.dashboard_enabled:
+        routes.extend(
+            [
+                Route("/dashboard", _dashboard_page, methods=["GET"]),
+                Route("/dashboard/app.js", _dashboard_js, methods=["GET"]),
+                Route("/dashboard/styles.css", _dashboard_css, methods=["GET"]),
+                Route("/dashboard/api/search", _dashboard_search, methods=["POST"]),
+                Route("/dashboard/api/branches", _dashboard_branches, methods=["GET"]),
+                Route("/dashboard/api/sources", _dashboard_sources, methods=["GET"]),
+                Route(
+                    "/dashboard/api/sources/delete",
+                    _dashboard_delete_source,
+                    methods=["POST"],
+                ),
+                Route("/dashboard/api/feedback", _dashboard_feedback, methods=["GET"]),
+            ]
+        )
     if settings.streamable_http_enabled:
         try:
             streamable_app = mcp.streamable_http_app()

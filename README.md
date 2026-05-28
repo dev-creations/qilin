@@ -199,6 +199,7 @@ To rotate the cert: `qilin cert regenerate` (then `qilin down && qilin up`).
 | `chunking.batch_size` | `16` | Batch size for Ollama `/api/embed`. |
 | `auth_token` | _(unset)_ | Bearer token (or list) required on incoming MCP requests. Unset = open to localhost. See [expose-on-lan](docs/recipes/expose-on-lan.md). |
 | `streamable_http_enabled` | `true` | Mount FastMCP's streamable HTTP app at `/mcp` alongside `/sse`. |
+| `dashboard_enabled` | `true` | Enable/disable Qilin Dev Dashboard routes (`/dashboard` and `/dashboard/api/*`). |
 | `ttl_sweep_seconds` | `300` | How often the TTL sweeper deletes expired chunks. |
 | `recall_log_path` | `~/.qilin/logs/recall.jsonl` | JSONL recall log destination. Empty string disables logging. |
 | `collections.<name>.chunk_size_tokens` | _(inherits)_ | Per-collection chunk size override. |
@@ -239,6 +240,50 @@ Qdrant ships a full web dashboard inside the same container. It's reachable at:
 The dashboard lets you browse collections, inspect points and payloads, run ad-hoc similarity searches, and — most usefully — see a 2D projection of your embeddings under the **Visualize** tab (colorable by any payload field, e.g. `language` or `repo`).
 
 The port is bound to `127.0.0.1` only, so it isn't reachable from the LAN.
+
+## Qilin Dev Dashboard
+
+Qilin now ships a lightweight built-in dashboard served directly by the MCP server.
+
+### Access
+
+After `qilin up`, open:
+
+- `http://localhost:8080/dashboard` (default plain-HTTP local endpoint), or
+- `https://localhost:8443/dashboard` (TLS endpoint; trust/import cert if needed).
+
+If you disabled plain HTTP (`server.http_enabled=false`), use the HTTPS URL.
+If you disabled the dashboard entirely (`dashboard_enabled=false`), all dashboard routes return `404`.
+
+### What you can do
+
+- **Test Bench**
+  - Run recall queries interactively.
+  - Tune `top_k`, `score_threshold`, `mmr_lambda`, `mode`, `rerank`.
+  - Optionally set `collection` and `git_branch`.
+  - Inspect returned hits (source, score, snippet preview).
+- **Known Branches & Collections**
+  - See all known branches inferred from existing collection names.
+  - Supports both branch naming styles configured by `branch_collection_position` (`suffix` and `prefix`).
+  - Unrecognized collections appear in an `unknown` bucket.
+- **Memory Curator**
+  - List indexed sources and chunk counts.
+  - Delete all chunks for a source from the selected/default collection.
+- **Feedback Log**
+  - View recent recall entries from `~/.qilin/logs/recall.jsonl` (or custom `recall_log_path`).
+
+### Dashboard API endpoints
+
+The UI is backed by additive HTTP endpoints:
+
+- `GET /dashboard`
+- `GET /dashboard/app.js`
+- `GET /dashboard/styles.css`
+- `POST /dashboard/api/search`
+- `GET /dashboard/api/branches`
+- `GET /dashboard/api/sources`
+- `POST /dashboard/api/sources/delete`
+- `GET /dashboard/api/feedback`
 
 ## Tools exposed over MCP
 

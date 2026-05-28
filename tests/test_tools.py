@@ -326,6 +326,38 @@ class TestCollections:
         out = await tools.create_collection("memes")
         assert out == {"name": "memes", "created": True}
 
+    def test_infer_branch_collections_suffix(self) -> None:
+        out = tools.infer_branch_collections(
+            ["memory-main", "memory-feature-auth", "scratch"],
+            branch_collection_position="suffix",
+        )
+        names = [item["branch_name"] for item in out["branches"]]
+        assert "main" in names
+        assert "feature-auth" in names
+        assert "scratch" in out["unknown_collections"]
+
+    def test_infer_branch_collections_prefix(self) -> None:
+        out = tools.infer_branch_collections(
+            ["main-memory", "feature-auth-memory", "scratch"],
+            branch_collection_position="prefix",
+        )
+        names = [item["branch_name"] for item in out["branches"]]
+        assert "main" in names
+        assert "feature-auth" in names
+
+    @pytest.mark.asyncio
+    async def test_list_sources_flattens_scan_sources(self, fake_store) -> None:
+        fake_store.scan_sources.return_value = {
+            "src/a.py": [
+                {"chunk_count": 2, "ids": ["1", "2"]},
+                {"chunk_count": 3, "ids": ["3"]},
+            ]
+        }
+        rows = await tools.list_sources(collection="memory")
+        assert rows[0]["source"] == "src/a.py"
+        assert rows[0]["chunk_count"] == 5
+        assert rows[0]["variant_count"] == 2
+
 
 class TestStats:
     @pytest.mark.asyncio

@@ -112,6 +112,98 @@ def test_build_mcp_registers_tools() -> None:
     assert "Qilin" in (mcp.instructions or "")
 
 
+def test_dashboard_page_serves_html(client: TestClient) -> None:
+    response = client.get("/dashboard")
+    assert response.status_code == 200
+    assert "Qilin Dev Dashboard" in response.text
+
+
+def test_dashboard_branches_endpoint(client: TestClient, mocker) -> None:
+    mocker.patch.object(
+        server_module.tools,
+        "list_collections",
+        AsyncMock(return_value=["memory-main", "memory-feature-auth"]),
+    )
+    response = client.get("/dashboard/api/branches")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["branches"]
+
+
+def test_dashboard_search_endpoint(client: TestClient, mocker) -> None:
+    mocker.patch.object(
+        server_module.tools,
+        "recall",
+        AsyncMock(return_value=[{"id": "1", "score": 0.9, "text": "x"}]),
+    )
+    response = client.post("/dashboard/api/search", json={"query": "hello"})
+    assert response.status_code == 200
+    assert response.json()["hits"][0]["id"] == "1"
+
+
+def test_dashboard_sources_endpoint(client: TestClient, mocker) -> None:
+    mocker.patch.object(
+        server_module.tools,
+        "list_sources",
+        AsyncMock(return_value=[{"source": "a.py", "chunk_count": 1}]),
+    )
+    response = client.get("/dashboard/api/sources")
+    assert response.status_code == 200
+    assert response.json()["sources"][0]["source"] == "a.py"
+
+
+def test_dashboard_delete_source_requires_source(client: TestClient) -> None:
+    response = client.post("/dashboard/api/sources/delete", json={})
+    assert response.status_code == 400
+    assert "error" in response.json()
+
+
+def test_dashboard_delete_source_calls_forget(client: TestClient, mocker) -> None:
+    forget_mock = mocker.patch.object(
+        server_module.tools,
+        "forget",
+        AsyncMock(return_value={"collection": "memory", "deleted": 3}),
+    )
+    response = client.post("/dashboard/api/sources/delete", json={"source": "a.py"})
+    assert response.status_code == 200
+    assert response.json()["deleted"] == 3
+    forget_mock.assert_awaited_once()
+
+
+def test_dashboard_feedback_endpoint(client: TestClient, mocker) -> None:
+    mocker.patch.object(
+        server_module,
+        "_read_feedback_entries",
+        return_value=[{"query": "q", "collection": "memory"}],
+    )
+    response = client.get("/dashboard/api/feedback")
+    assert response.status_code == 200
+    assert response.json()["entries"][0]["query"] == "q"
+
+
+def test_dashboard_routes_disabled_when_setting_off(mocker) -> None:
+    fake_store = AsyncMock()
+    fake_store.health.return_value = True
+    fake_embedder = AsyncMock()
+    fake_embedder.health.return_value = True
+    mocker.patch.object(server_module, "get_store", AsyncMock(return_value=fake_store))
+    mocker.patch.object(
+        server_module, "get_embedder", AsyncMock(return_value=fake_embedder)
+    )
+    mocker.patch.object(server_module, "shutdown_embedder", AsyncMock())
+    mocker.patch.object(server_module, "shutdown_store", AsyncMock())
+    mocker.patch.object(server_module, "shutdown_sparse", AsyncMock())
+    mocker.patch.object(server_module, "shutdown_reranker", AsyncMock())
+
+    settings = server_module.get_settings()
+    mocker.patch.object(settings, "dashboard_enabled", False)
+
+    app = server_module._build_app()
+    with TestClient(app) as c:
+        assert c.get("/dashboard").status_code == 404
+        assert c.get("/dashboard/api/branches").status_code == 404
+
+
 def test_root_advertises_mcp_endpoint_when_streamable_http_enabled(
     mocker,
 ) -> None:
