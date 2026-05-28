@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from typing import Any
@@ -160,8 +161,63 @@ def project_collection_name(base_collection: str, workspace_root: str) -> str:
 @dataclass(frozen=True, slots=True)
 class ScopeDecision:
     collection: str
+    recall_collections: list[str]
     workspace_roots: list[str]
     apply_prefix_filter: bool
+
+
+def sanitize_branch_name(branch: str | None) -> str | None:
+    if branch is None:
+        return None
+    cleaned = branch.strip().lower()
+    if not cleaned or cleaned == "head":
+        return None
+    cleaned = re.sub(r"[^a-z0-9._-]+", "-", cleaned)
+    cleaned = re.sub(r"-{2,}", "-", cleaned).strip("-._")
+    if not cleaned:
+        return None
+    if len(cleaned) > 40:
+        digest = hashlib.sha1(cleaned.encode("utf-8")).hexdigest()[:8]
+        cleaned = f"{cleaned[:31]}-{digest}"
+    return cleaned
+
+
+def branch_collection_name(base_collection: str, branch: str, *, position: str) -> str:
+    if position == "prefix":
+        return f"{branch}-{base_collection}"
+    return f"{base_collection}-{branch}"
+
+
+def _build_branch_collections(
+    *,
+    settings: Settings,
+    base_collection: str,
+    git_branch: str | None,
+) -> list[str]:
+    if not settings.branch_routing_enabled:
+        return [base_collection]
+    active = sanitize_branch_name(git_branch)
+    if active is None:
+        return [base_collection]
+    active_collection = branch_collection_name(
+        base_collection, active, position=settings.branch_collection_position
+    )
+    baseline = sanitize_branch_name(settings.branch_baseline_name)
+    baseline_collection = (
+        branch_collection_name(
+            base_collection, baseline, position=settings.branch_collection_position
+        )
+        if baseline
+        else base_collection
+    )
+    strategy = settings.branch_fallback_strategy
+    if strategy == "active_only":
+        return [active_collection]
+    if strategy in {"active_plus_baseline", "active_then_baseline"}:
+        if active_collection == baseline_collection:
+            return [active_collection]
+        return [active_collection, baseline_collection]
+    return [active_collection]
 
 
 def resolve_scope(
@@ -169,10 +225,17 @@ def resolve_scope(
     settings: Settings,
     base_collection: str,
     explicit_workspace_roots: list[str] | None = None,
+    git_branch: str | None = None,
 ) -> ScopeDecision:
     if not settings.workspace_scoping_enabled:
+        collections = _build_branch_collections(
+            settings=settings, base_collection=base_collection, git_branch=git_branch
+        )
         return ScopeDecision(
-            collection=base_collection, workspace_roots=[], apply_prefix_filter=False
+            collection=collections[0],
+            recall_collections=collections,
+            workspace_roots=[],
+            apply_prefix_filter=False,
         )
 
     roots = normalize_workspace_roots(
@@ -180,8 +243,14 @@ def resolve_scope(
         mappings=settings.workspace_path_mappings,
     )
     if not roots:
+        collections = _build_branch_collections(
+            settings=settings, base_collection=base_collection, git_branch=git_branch
+        )
         return ScopeDecision(
-            collection=base_collection, workspace_roots=[], apply_prefix_filter=False
+            collection=collections[0],
+            recall_collections=collections,
+            workspace_roots=[],
+            apply_prefix_filter=False,
         )
 
     mode = settings.workspace_scoping_mode
@@ -190,8 +259,12 @@ def resolve_scope(
     if mode in {"per_project_collection", "hybrid"} and settings.workspace_use_project_collection:
         collection = project_collection_name(base_collection, roots[0])
 
+    collections = _build_branch_collections(
+        settings=settings, base_collection=collection, git_branch=git_branch
+    )
     return ScopeDecision(
-        collection=collection,
+        collection=collections[0],
+        recall_collections=collections,
         workspace_roots=roots,
         apply_prefix_filter=apply_prefix,
     )

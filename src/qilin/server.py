@@ -55,6 +55,7 @@ def _build_mcp() -> FastMCP:
         metadata: dict[str, Any] | None = None,
         source: str | None = None,
         language: str | None = None,
+        git_branch: str | None = None,
         ctx: Any | None = None,
     ) -> dict[str, Any]:
         """Store text in vector memory. Long inputs are chunked automatically.
@@ -80,6 +81,7 @@ def _build_mcp() -> FastMCP:
                 source=source,
                 language=language,
                 workspace_roots=roots,
+                git_branch=git_branch,
             )
         finally:
             reset_workspace_roots(token)
@@ -97,6 +99,8 @@ def _build_mcp() -> FastMCP:
         mode: str | None = None,
         rerank: bool | None = None,
         rerank_top_k: int | None = None,
+        git_branch: str | None = None,
+        fallback_strategy: str | None = None,
         ctx: Any | None = None,
     ) -> list[dict[str, Any]]:
         """Search vector memory for chunks most relevant to a natural-language query.
@@ -142,6 +146,8 @@ def _build_mcp() -> FastMCP:
                 rerank=rerank,
                 rerank_top_k=rerank_top_k,
                 workspace_roots=roots,
+                git_branch=git_branch,
+                fallback_strategy=fallback_strategy,
             )
         finally:
             reset_workspace_roots(token)
@@ -155,6 +161,8 @@ def _build_mcp() -> FastMCP:
         score_threshold: float | None = None,
         mode: str | None = None,
         rerank: bool | None = None,
+        git_branch: str | None = None,
+        fallback_strategy: str | None = None,
         ctx: Any | None = None,
     ) -> list[dict[str, Any]]:
         """Return the top-K source *files* relevant to a query.
@@ -178,6 +186,8 @@ def _build_mcp() -> FastMCP:
                 mode=mode,
                 rerank=rerank,
                 workspace_roots=roots,
+                git_branch=git_branch,
+                fallback_strategy=fallback_strategy,
             )
         finally:
             reset_workspace_roots(token)

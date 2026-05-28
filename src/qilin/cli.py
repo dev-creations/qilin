@@ -127,6 +127,27 @@ def _detect_git_sha(repo_root: Path) -> str | None:
     return result.stdout.strip() or None
 
 
+def _detect_git_branch(repo_root: Path) -> str | None:
+    if not (repo_root / ".git").exists():
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    branch = result.stdout.strip() or None
+    if branch == "HEAD":
+        return None
+    return branch
+
+
 def _iter_files(
     repo_root: Path,
     *,
@@ -256,6 +277,7 @@ def ingest(
 
     gitignore = _load_gitignore(repo_root) if respect_gitignore else None
     detected_sha = git_sha or _detect_git_sha(repo_root)
+    detected_branch = _detect_git_branch(repo_root)
 
     asyncio.run(
         _run_ingest(
@@ -268,6 +290,7 @@ def ingest(
             max_bytes=max_bytes,
             gitignore=gitignore,
             git_sha=detected_sha,
+            git_branch=detected_branch,
             label=label,
             force=force,
             dry_run=dry_run,
@@ -300,6 +323,7 @@ async def _ingest_one(
     collection: str,
     source_prefix: str,
     git_sha: str | None,
+    git_branch: str | None,
     label: str | None,
     force: bool,
     existing: dict[str, list[dict[str, object]]],
@@ -361,6 +385,8 @@ async def _ingest_one(
     }
     if git_sha:
         metadata["git_sha"] = git_sha
+    if git_branch:
+        metadata["git_branch"] = git_branch
     if label:
         metadata["label"] = label
 
@@ -371,6 +397,7 @@ async def _ingest_one(
             metadata=metadata,
             source=source,
             language=language,
+            git_branch=git_branch,
         )
         stats.total_chunks += int(result.get("chunks_written", 0))
         stats.ingested += 1
@@ -389,6 +416,7 @@ async def _run_ingest(
     max_bytes: int,
     gitignore: pathspec.PathSpec | None,
     git_sha: str | None,
+    git_branch: str | None,
     label: str | None,
     force: bool,
     dry_run: bool,
@@ -410,6 +438,8 @@ async def _run_ingest(
     console.print(f"  candidates after filters: [bold]{len(candidates)}[/bold]")
     if git_sha:
         console.print(f"  git_sha: {git_sha[:12]}")
+    if git_branch:
+        console.print(f"  git_branch: {git_branch}")
     if source_prefix:
         console.print(f"  source_prefix: {source_prefix}")
     console.print()
@@ -451,6 +481,7 @@ async def _run_ingest(
                     collection=collection,
                     source_prefix=source_prefix,
                     git_sha=git_sha,
+                    git_branch=git_branch,
                     label=label,
                     force=force,
                     existing=existing,
@@ -569,6 +600,7 @@ def watch(
 
     gitignore = _load_gitignore(repo_root) if respect_gitignore else None
     detected_sha = _detect_git_sha(repo_root)
+    detected_branch = _detect_git_branch(repo_root)
 
     asyncio.run(
         _run_watch(
@@ -581,6 +613,7 @@ def watch(
             max_bytes=max_bytes,
             gitignore=gitignore,
             git_sha=detected_sha,
+            git_branch=detected_branch,
             label=label,
             debounce_ms=debounce_ms,
         )
@@ -598,6 +631,7 @@ async def _run_watch(
     max_bytes: int,
     gitignore: pathspec.PathSpec | None,
     git_sha: str | None,
+    git_branch: str | None,
     label: str | None,
     debounce_ms: int,
 ) -> None:
@@ -670,6 +704,8 @@ async def _run_watch(
 
             stats = _IngestStats()
             existing = await store.scan_sources(collection)
+            current_branch = _detect_git_branch(repo_root) or git_branch
+            current_sha = _detect_git_sha(repo_root) or git_sha
             for src in to_delete:
                 try:
                     deleted = await store.delete(
@@ -688,7 +724,8 @@ async def _run_watch(
                     repo_root=repo_root,
                     collection=collection,
                     source_prefix=source_prefix,
-                    git_sha=git_sha,
+                    git_sha=current_sha,
+                    git_branch=current_branch,
                     label=label,
                     force=False,
                     existing=existing,
@@ -754,6 +791,7 @@ def recall_cmd(
                 context_window=context_window,
                 group_by_source=group_by_source,
                 mmr_lambda=mmr_lambda,
+                git_branch=_detect_git_branch(Path.cwd()),
             )
             if not hits:
                 console.print("[dim]No hits.[/dim]")
@@ -905,6 +943,58 @@ def recall_log_cmd(
                 f" {hit.get('source', '<no source>')}"
                 f" [dim]({hit.get('id', '?')[:8]})[/dim]"
             )
+
+
+def _write_hook_script(hook_path: Path, command: str) -> None:
+    marker_start = "# >>> qilin auto-index >>>"
+    marker_end = "# <<< qilin auto-index <<<"
+    block = f"{marker_start}\n{command}\n{marker_end}\n"
+    existing = hook_path.read_text(encoding="utf-8", errors="ignore") if hook_path.exists() else ""
+    if marker_start in existing and marker_end in existing:
+        before, _, tail = existing.partition(marker_start)
+        _, _, after = tail.partition(marker_end)
+        new_content = before + block + after.lstrip("\n")
+    else:
+        shebang = "#!/usr/bin/env sh\n"
+        prefix = shebang if not existing.startswith("#!") else ""
+        spacer = "\n" if existing and not existing.endswith("\n") else ""
+        new_content = f"{prefix}{existing}{spacer}{block}"
+    hook_path.write_text(new_content, encoding="utf-8")
+    try:
+        hook_path.chmod(0o755)
+    except OSError:
+        pass
+
+
+@app.command("install-git-hooks")
+def install_git_hooks(
+    path: Annotated[
+        Path, typer.Argument(help="Git repository path where hooks will be installed.")
+    ] = Path("."),
+    collection: Annotated[
+        str | None, typer.Option("--collection", "-c", help="Collection to ingest into.")
+    ] = None,
+) -> None:
+    """Install post-checkout and post-commit hooks for incremental indexing."""
+    repo_root = path.resolve()
+    git_dir = repo_root / ".git"
+    hooks_dir = git_dir / "hooks"
+    if not git_dir.exists() or not hooks_dir.exists():
+        console.print(f"[red]error:[/red] {repo_root} is not a git repository")
+        raise typer.Exit(code=2)
+    settings = get_settings()
+    collection_name = collection or settings.default_collection
+    ingest_cmd = (
+        f'qilin ingest "{repo_root}" --collection "{collection_name}" '
+        "--respect-gitignore --prune"
+    )
+    post_checkout = hooks_dir / "post-checkout"
+    post_commit = hooks_dir / "post-commit"
+    _write_hook_script(post_checkout, ingest_cmd)
+    _write_hook_script(post_commit, ingest_cmd)
+    console.print("[green]Installed git hooks:[/green]")
+    console.print(f"  {post_checkout}")
+    console.print(f"  {post_commit}")
 
 
 @app.command("serve")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from qilin.config import Settings
 from qilin.workspace_scope import (
+    branch_collection_name,
     apply_path_mappings,
     extract_workspace_folders_from_ctx,
     normalize_source,
@@ -9,6 +10,7 @@ from qilin.workspace_scope import (
     project_collection_name,
     reset_workspace_roots,
     resolve_scope,
+    sanitize_branch_name,
     set_workspace_roots,
     source_matches_workspace,
 )
@@ -39,6 +41,7 @@ def test_resolve_scope_prefix_filter_mode() -> None:
         explicit_workspace_roots=["/tmp/repo"],
     )
     assert decision.collection == "memory"
+    assert decision.recall_collections == ["memory"]
     assert decision.apply_prefix_filter is True
     assert decision.workspace_roots == ["/tmp/repo"]
 
@@ -54,6 +57,7 @@ def test_resolve_scope_hybrid_with_project_collection() -> None:
         explicit_workspace_roots=["/tmp/repo"],
     )
     assert decision.collection.startswith("memory-project-")
+    assert decision.recall_collections == [decision.collection]
     assert decision.apply_prefix_filter is True
 
 
@@ -103,6 +107,7 @@ def test_resolve_scope_disabled_returns_base_collection() -> None:
         explicit_workspace_roots=["/tmp/repo"],
     )
     assert decision.collection == "memory"
+    assert decision.recall_collections == ["memory"]
     assert decision.apply_prefix_filter is False
     assert decision.workspace_roots == []
 
@@ -119,6 +124,32 @@ def test_resolve_scope_per_project_collection_only() -> None:
     )
     assert decision.collection.startswith("memory-project-")
     assert decision.apply_prefix_filter is False
+
+
+def test_sanitize_branch_name_rejects_detached_head() -> None:
+    assert sanitize_branch_name("HEAD") is None
+
+
+def test_branch_collection_name_suffix() -> None:
+    assert branch_collection_name("memory", "feature-auth", position="suffix") == "memory-feature-auth"
+
+
+def test_resolve_scope_adds_branch_collections_with_fallback() -> None:
+    settings = Settings(
+        workspace_scoping_mode="prefix_filter",
+        branch_routing_enabled=True,
+        branch_fallback_strategy="active_plus_baseline",
+        branch_baseline_name="main",
+    )
+    decision = resolve_scope(
+        settings=settings,
+        base_collection="memory",
+        explicit_workspace_roots=["/tmp/repo"],
+        git_branch="feature/auth",
+    )
+    assert decision.collection.startswith("memory-feature-auth")
+    assert len(decision.recall_collections) == 2
+    assert decision.recall_collections[1].endswith("-main")
 
 
 def test_extract_workspace_folders_from_ctx_object_shape() -> None:

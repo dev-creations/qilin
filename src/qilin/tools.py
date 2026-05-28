@@ -112,6 +112,7 @@ async def remember(
     source: str | None = None,
     language: str | None = None,
     workspace_roots: list[str] | None = None,
+    git_branch: str | None = None,
 ) -> dict[str, Any]:
     """Chunk ``text``, embed each chunk, and upsert them into the vector store.
 
@@ -142,6 +143,7 @@ async def remember(
         settings=settings,
         base_collection=collection_name,
         explicit_workspace_roots=workspace_roots,
+        git_branch=git_branch,
     )
     collection_name = scope.collection
     coll_settings = settings.for_collection(collection_name)
@@ -588,6 +590,8 @@ async def recall(
     rerank: bool | None = None,
     rerank_top_k: int | None = None,
     workspace_roots: list[str] | None = None,
+    git_branch: str | None = None,
+    fallback_strategy: str | None = None,
 ) -> list[dict[str, Any]]:
     """Vector-search for the chunks most relevant to ``query``.
 
@@ -633,8 +637,11 @@ async def recall(
         settings=settings,
         base_collection=collection_name,
         explicit_workspace_roots=workspace_roots,
+        git_branch=git_branch,
     )
     collection_name = scope.collection
+    strategy = fallback_strategy or settings.branch_fallback_strategy
+    candidate_collections = list(scope.recall_collections or [collection_name])
     effective_mode = _resolve_mode(mode)
     rerank_on = settings.rerank_enabled if rerank is None else bool(rerank)
     rerank_pool = max(top_k, rerank_top_k or settings.rerank_top_k)
@@ -659,20 +666,59 @@ async def recall(
         internal_k = max(internal_k, top_k * 20)
     need_vectors = mmr_lambda is not None
 
-    hits = await store.search(
-        collection=collection_name,
-        vector=vectors[0],
-        top_k=internal_k,
-        filter_obj=(
-            {"is_child": True, **(filter or {})}
-            if settings.for_collection(collection_name).parent_child_enabled
-            else filter
-        ),
-        score_threshold=score_threshold,
-        with_vectors=need_vectors,
-        mode=effective_mode,
-        sparse_vector=sparse_query,
-    )
+    async def _search_collection(target_collection: str) -> list[SearchHit]:
+        coll_settings = settings.for_collection(target_collection)
+        return await store.search(
+            collection=target_collection,
+            vector=vectors[0],
+            top_k=internal_k,
+            filter_obj=(
+                {"is_child": True, **(filter or {})}
+                if coll_settings.parent_child_enabled
+                else filter
+            ),
+            score_threshold=score_threshold,
+            with_vectors=need_vectors,
+            mode=effective_mode,
+            sparse_vector=sparse_query,
+        )
+
+    searched_collections: list[str] = []
+    per_collection_hits: list[tuple[str, list[SearchHit]]] = []
+    if strategy == "active_then_baseline" and len(candidate_collections) > 1:
+        first_collection = candidate_collections[0]
+        first_hits = await _search_collection(first_collection)
+        searched_collections.append(first_collection)
+        per_collection_hits.append((first_collection, first_hits))
+        if len(first_hits) < top_k:
+            for extra_collection in candidate_collections[1:]:
+                extra_hits = await _search_collection(extra_collection)
+                searched_collections.append(extra_collection)
+                per_collection_hits.append((extra_collection, extra_hits))
+    else:
+        for target_collection in candidate_collections:
+            found = await _search_collection(target_collection)
+            searched_collections.append(target_collection)
+            per_collection_hits.append((target_collection, found))
+
+    merged: list[SearchHit] = []
+    dedup_ids: set[str] = set()
+    for idx, (target_collection, found_hits) in enumerate(per_collection_hits):
+        ordered_hits = sorted(found_hits, key=lambda h: h.score, reverse=True)
+        for hit in ordered_hits:
+            if hit.id in dedup_ids:
+                continue
+            dedup_ids.add(hit.id)
+            merged.append(
+                SearchHit(
+                    id=hit.id,
+                    score=float(hit.score),
+                    text=hit.text,
+                    payload=dict(hit.payload),
+                    vector=hit.vector,
+                )
+            )
+    hits = merged
 
     if rerank_on:
         hits = await _rerank_hits(query, hits[:rerank_pool])
@@ -697,16 +743,14 @@ async def recall(
     formatted = [_format_hit(h.id, h.score, h.payload) for h in hits]
 
     if context_window > 0 and not settings.for_collection(collection_name).parent_child_enabled:
-        formatted = await _expand_neighbors(
-            store, collection_name, formatted, context_window
-        )
+        formatted = await _expand_neighbors(store, collection_name, formatted, context_window)
 
     elapsed_ms = analytics.Clock.now_ms() - start_ms
     log_path = analytics.resolve_log_path(settings.recall_log_path)
     analytics.log_recall(
         log_path,
         query=query,
-        collection=collection_name,
+        collection=",".join(searched_collections) if searched_collections else collection_name,
         top_k=top_k,
         mode=effective_mode,
         rerank=rerank_on,
@@ -727,6 +771,8 @@ async def recall_files(
     mode: str | None = None,
     rerank: bool | None = None,
     workspace_roots: list[str] | None = None,
+    git_branch: str | None = None,
+    fallback_strategy: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return the top-K ``source`` files for ``query``.
 
@@ -758,6 +804,8 @@ async def recall_files(
         mode=mode,
         rerank=rerank,
         workspace_roots=workspace_roots,
+        git_branch=git_branch,
+        fallback_strategy=fallback_strategy,
     )
 
     by_source: dict[str, dict[str, Any]] = {}

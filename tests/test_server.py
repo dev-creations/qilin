@@ -366,10 +366,11 @@ class TestRegisteredTools:
     @pytest.mark.asyncio
     async def test_recall_wrapper_forwards(self, patched_tools) -> None:
         mcp = server_module._build_mcp()
-        await mcp.call_tool("recall", {"query": "q"})
+        await mcp.call_tool("recall", {"query": "q", "git_branch": "feature/x"})
         patched_tools.recall.assert_awaited_once()
         kwargs = patched_tools.recall.await_args.kwargs
         assert kwargs["query"] == "q"
+        assert kwargs["git_branch"] == "feature/x"
 
     @pytest.mark.asyncio
     async def test_recall_wrapper_extracts_workspace_roots(self, patched_tools) -> None:

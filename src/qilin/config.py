@@ -5,6 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 
 from pydantic import BaseModel, Field
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -230,6 +231,30 @@ class Settings(BaseSettings):
             "and source paths before scoping."
         ),
     )
+    branch_routing_enabled: bool = Field(
+        default=False,
+        description=(
+            "When true, remember/recall route to branch-specific collections when a "
+            "git branch is provided by the caller."
+        ),
+    )
+    branch_baseline_name: str = Field(
+        default="main",
+        description="Baseline branch used for fallback recall routing.",
+    )
+    branch_fallback_strategy: str = Field(
+        default="active_only",
+        description=(
+            "Recall strategy for branch routing: `active_only`, "
+            "`active_plus_baseline`, or `active_then_baseline`."
+        ),
+    )
+    branch_collection_position: str = Field(
+        default="suffix",
+        description=(
+            "Where branch token is applied in the collection name: `suffix` or `prefix`."
+        ),
+    )
 
     recall_log_path: str | None = Field(
         default=None,
@@ -239,6 +264,30 @@ class Settings(BaseSettings):
             "disable logging."
         ),
     )
+
+    @field_validator("workspace_scoping_mode")
+    @classmethod
+    def _validate_workspace_scoping_mode(cls, value: str) -> str:
+        allowed = {"prefix_filter", "per_project_collection", "hybrid"}
+        if value not in allowed:
+            raise ValueError(f"workspace_scoping_mode must be one of {sorted(allowed)}")
+        return value
+
+    @field_validator("branch_fallback_strategy")
+    @classmethod
+    def _validate_branch_fallback_strategy(cls, value: str) -> str:
+        allowed = {"active_only", "active_plus_baseline", "active_then_baseline"}
+        if value not in allowed:
+            raise ValueError(f"branch_fallback_strategy must be one of {sorted(allowed)}")
+        return value
+
+    @field_validator("branch_collection_position")
+    @classmethod
+    def _validate_branch_collection_position(cls, value: str) -> str:
+        allowed = {"suffix", "prefix"}
+        if value not in allowed:
+            raise ValueError(f"branch_collection_position must be one of {sorted(allowed)}")
+        return value
 
     def for_collection(self, name: str) -> Settings:
         """Return a settings view with per-collection overrides applied.

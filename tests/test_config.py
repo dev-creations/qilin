@@ -29,6 +29,10 @@ def test_defaults_match_documented_values() -> None:
     assert s.workspace_scoping_mode == "prefix_filter"
     assert s.workspace_use_project_collection is False
     assert s.workspace_path_mappings == {}
+    assert s.branch_routing_enabled is False
+    assert s.branch_baseline_name == "main"
+    assert s.branch_fallback_strategy == "active_only"
+    assert s.branch_collection_position == "suffix"
 
 
 def test_env_overrides_are_applied(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -65,3 +69,8 @@ def test_get_settings_is_cached() -> None:
     b = get_settings()
 
     assert a is b
+
+
+def test_branch_fallback_strategy_validation() -> None:
+    with pytest.raises(ValidationError):
+        Settings(branch_fallback_strategy="invalid")

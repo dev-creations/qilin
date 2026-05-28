@@ -346,6 +346,9 @@ class TestHelpers:
     def test_detect_git_sha_returns_none_for_non_git_dir(self, tmp_path: Path) -> None:
         assert cli_module._detect_git_sha(tmp_path) is None
 
+    def test_detect_git_branch_returns_none_for_non_git_dir(self, tmp_path: Path) -> None:
+        assert cli_module._detect_git_branch(tmp_path) is None
+
     def test_load_gitignore_returns_none_when_missing(self, tmp_path: Path) -> None:
         assert cli_module._load_gitignore(tmp_path) is None
 
@@ -359,3 +362,15 @@ class TestHelpers:
     def test_load_gitignore_empty_file_returns_none(self, tmp_path: Path) -> None:
         (tmp_path / ".gitignore").write_text("")
         assert cli_module._load_gitignore(tmp_path) is None
+
+
+class TestInstallGitHooks:
+    def test_install_git_hooks_writes_scripts(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        hooks = tmp_path / ".git" / "hooks"
+        hooks.mkdir(parents=True)
+        result = runner.invoke(cli_module.app, ["install-git-hooks", str(tmp_path)])
+        assert result.exit_code == 0
+        assert (hooks / "post-checkout").exists()
+        assert (hooks / "post-commit").exists()

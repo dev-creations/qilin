@@ -34,64 +34,7 @@ We propose introducing a pluggable embedding interface supporting external APIs 
 
 ---
 
-## 2. Git-Branch-Aware Collection Routing
 
-### Concept
-In a standard Git workflow, developers switch branches constantly. Codebases look very different on a feature branch compared to `main`. Currently, Qilin ingests everything into a shared repository collection, causing code from different branches to collide or become stale.
-
-We propose making collections **Git branch-aware**, allowing isolated memory spaces that automatically sync and route query results based on the developer's active branch.
-
-### Proposed Changes
-
-* **Automatic Branch Isolation**:
-  * The host CLI (`qilin ingest` or `qilin watch`) queries the current Git branch using `git rev-parse --abbrev-ref HEAD`.
-  * If a branch option is enabled, it prefixes/suffixes the target collection name (e.g., `myrepo` -> `myrepo-feature-auth`).
-* **Hierarchical Recall Routing**:
-  * Modify `recall` and `recall_files` to accept a list of collections or fallbacks.
-  * When querying `myrepo-feature-auth`, Qilin can automatically query *both* the feature branch collection and the baseline `main` collection, merging results but prioritising the active branch's chunks.
-* **Git Hook Triggers**:
-  * Provide a shell command/installer to configure a `post-checkout` or `post-commit` Git hook, automatically running incremental indexing.
-
-### Developer Value
-* **Accurate context**: The LLM won't retrieve code definitions that only exist on another feature branch.
-* **No manual cleanups**: Removes the need to manually rebuild or purge collections when shifting tasks.
-
----
-
-## 3. Parent-Child (Hierarchical) Chunking
-
-### Concept
-A common issue with vector search is the trade-off between **precision** and **context size**:
-* Small chunks (e.g., 50-100 tokens) yield highly precise search results but lack context when sent to the LLM.
-* Large chunks (e.g., 500-1000 tokens) retain context but dilute semantic similarity, meaning query relevance scores drop.
-
-We propose **Parent-Child Chunking**: we store tiny "child" chunks for semantic matching, but associate them with larger "parent" codeblocks (like the entire function or class body) that are returned during recall.
-
-```mermaid
-graph TD
-    Parent["Parent Chunk (Full Function/Class - 600 tokens)"]
-    Parent --> Child1["Child Chunk 1 (150 tokens)"]
-    Parent --> Child2["Child Chunk 2 (150 tokens)"]
-    Parent --> Child3["Child Chunk 3 (150 tokens)"]
-    
-    Query((Recall Query)) -.->|High Similarity| Child2
-    Child2 -->|Returns Context| Parent
-```
-
-### Proposed Changes
-
-* **Payload Mapping** (`src/qilin/store.py`):
-  * When storing, parent chunks (large tokens) are mapped to a set of child chunks (smaller tokens).
-  * Child points are embedded and upserted. Their payload references their parent ID: `parent_id: <uuid>`.
-* **Rerouted Retrieval** (`src/qilin/tools.py`):
-  * The `recall` search runs on child vectors.
-  * Before returning hits, Qilin retrieves the parent payload for each matching child ID, returning the complete parent text to the client.
-
-### Developer Value
-* **Maximum context quality**: The LLM gets the entire method or paragraph even if only a single line matched the query.
-* **Higher recall accuracy**: Resolves cases where search results are cut off mid-declaration.
-
----
 
 ## 4. Local Developer UI & Test Bench
 

@@ -506,3 +506,26 @@ class TestWorkspaceScoping:
 
         called_collection = fake_store.search.await_args.kwargs["collection"]
         assert called_collection.startswith("memory-project-")
+
+    @pytest.mark.asyncio
+    async def test_recall_branch_fallback_queries_active_and_baseline(
+        self, fake_embedder, fake_store, mocker
+    ) -> None:
+        from qilin.config import get_settings
+
+        settings = get_settings()
+        mocker.patch.object(settings, "recall_log_path", "")
+        mocker.patch.object(settings, "workspace_scoping_enabled", True)
+        mocker.patch.object(settings, "workspace_scoping_mode", "prefix_filter")
+        mocker.patch.object(settings, "branch_routing_enabled", True)
+        mocker.patch.object(settings, "branch_fallback_strategy", "active_plus_baseline")
+
+        fake_embedder.embed.return_value = [[0.1, 0.2, 0.3]]
+        fake_store.search.side_effect = [
+            [SearchHit(id="active", score=0.9, text="a", payload={"text": "a", "source": "/repo/a.py"})],
+            [SearchHit(id="base", score=0.8, text="b", payload={"text": "b", "source": "/repo/b.py"})],
+        ]
+
+        out = await tools.recall(query="q", top_k=2, workspace_roots=["/repo"], git_branch="feature/x")
+        assert [h["id"] for h in out] == ["active", "base"]
+        assert fake_store.search.await_count == 2

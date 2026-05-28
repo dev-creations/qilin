@@ -22,6 +22,7 @@ Short, copy-pasteable recipes for common deployments and workflows.
 | [Hybrid search and reranking](recipes/hybrid-search.md) | Mixing BM25 with dense vectors and re-ranking with a cross-encoder. |
 | [Incremental ingest](recipes/incremental-ingest.md) | Manifests, handling deletions, forcing a clean re-ingest. |
 | [Watch mode](recipes/watch-mode.md) | Keeping memory in sync with an editor session. |
+| [Branch-aware routing](recipes/branch-aware-routing.md) | Isolating memory by git branch with configurable fallback to baseline. |
 | [Code vs. docs collections](recipes/code-vs-docs-collections.md) | Routing code to a code-specific embedding model. |
 | [Exposing Qilin on the LAN](recipes/expose-on-lan.md) | TLS trust, bearer-token auth, firewall notes. |
 | [Scratch vs. knowledge collections](recipes/scratch-vs-knowledge-collections.md) | TTL-backed session memory beside long-lived knowledge. |
