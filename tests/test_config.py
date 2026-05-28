@@ -22,6 +22,10 @@ def test_defaults_match_documented_values() -> None:
     assert s.embed_batch_size == 16
     assert s.mcp_host == "0.0.0.0"
     assert s.mcp_port == 8443
+    assert s.workspace_scoping_enabled is True
+    assert s.workspace_scoping_mode == "prefix_filter"
+    assert s.workspace_use_project_collection is False
+    assert s.workspace_path_mappings == {}
 
 
 def test_env_overrides_are_applied(monkeypatch: pytest.MonkeyPatch) -> None:

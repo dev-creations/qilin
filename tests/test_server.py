@@ -372,6 +372,23 @@ class TestRegisteredTools:
         assert kwargs["query"] == "q"
 
     @pytest.mark.asyncio
+    async def test_recall_wrapper_extracts_workspace_roots(self, patched_tools) -> None:
+        mcp = server_module._build_mcp()
+        await mcp.call_tool(
+            "recall",
+            {
+                "query": "q",
+                "ctx": {
+                    "initialize_params": {
+                        "workspaceFolders": [{"uri": "file:///repo", "name": "repo"}]
+                    }
+                },
+            },
+        )
+        kwargs = patched_tools.recall.await_args.kwargs
+        assert kwargs["workspace_roots"] == ["/repo"]
+
+    @pytest.mark.asyncio
     async def test_recall_files_wrapper_forwards(self, patched_tools) -> None:
         mcp = server_module._build_mcp()
         await mcp.call_tool("recall_files", {"query": "q"})

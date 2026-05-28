@@ -33,6 +33,7 @@ from .store import (
     deterministic_point_id,
     get_store,
 )
+from .workspace_scope import resolve_scope, source_matches_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,7 @@ async def remember(
     metadata: dict[str, Any] | None = None,
     source: str | None = None,
     language: str | None = None,
+    workspace_roots: list[str] | None = None,
 ) -> dict[str, Any]:
     """Chunk ``text``, embed each chunk, and upsert them into the vector store.
 
@@ -128,8 +130,15 @@ async def remember(
     if not text or not text.strip():
         return {"collection": _resolve_collection(collection), "chunks_written": 0, "ids": []}
 
+    settings = get_settings()
     collection_name = _resolve_collection(collection)
-    coll_settings = get_settings().for_collection(collection_name)
+    scope = resolve_scope(
+        settings=settings,
+        base_collection=collection_name,
+        explicit_workspace_roots=workspace_roots,
+    )
+    collection_name = scope.collection
+    coll_settings = settings.for_collection(collection_name)
     chunks = chunk_code(text, language, settings=coll_settings)
     if not chunks:
         return {"collection": collection_name, "chunks_written": 0, "ids": []}
@@ -401,6 +410,7 @@ async def recall(
     mode: str | None = None,
     rerank: bool | None = None,
     rerank_top_k: int | None = None,
+    workspace_roots: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Vector-search for the chunks most relevant to ``query``.
 
@@ -442,6 +452,12 @@ async def recall(
         return []
 
     settings = get_settings()
+    scope = resolve_scope(
+        settings=settings,
+        base_collection=collection_name,
+        explicit_workspace_roots=workspace_roots,
+    )
+    collection_name = scope.collection
     effective_mode = _resolve_mode(mode)
     rerank_on = settings.rerank_enabled if rerank is None else bool(rerank)
     rerank_pool = max(top_k, rerank_top_k or settings.rerank_top_k)
@@ -462,6 +478,8 @@ async def recall(
 
     needs_post = mmr_lambda is not None or group_by_source or rerank_on
     internal_k = max(top_k * 4, 25, rerank_pool) if needs_post else top_k
+    if scope.apply_prefix_filter and scope.workspace_roots:
+        internal_k = max(internal_k, top_k * 20)
     need_vectors = mmr_lambda is not None
 
     hits = await store.search(
@@ -482,6 +500,14 @@ async def recall(
         hits = _mmr_rerank(vectors[0], hits, mmr_lambda, internal_k)
     if group_by_source:
         hits = _group_by_source(hits)
+    if scope.apply_prefix_filter and scope.workspace_roots:
+        hits = [
+            h
+            for h in hits
+            if source_matches_workspace(
+                h.payload.get("source"), scope.workspace_roots
+            )
+        ]
     hits = hits[:top_k]
 
     formatted = [_format_hit(h.id, h.score, h.payload) for h in hits]
@@ -516,6 +542,7 @@ async def recall_files(
     *,
     mode: str | None = None,
     rerank: bool | None = None,
+    workspace_roots: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Return the top-K ``source`` files for ``query``.
 
@@ -546,6 +573,7 @@ async def recall_files(
         score_threshold=score_threshold,
         mode=mode,
         rerank=rerank,
+        workspace_roots=workspace_roots,
     )
 
     by_source: dict[str, dict[str, Any]] = {}

@@ -8,6 +8,7 @@ top-level [README](../README.md).
 - [Architecture](architecture.md) - the longer-form system picture.
 - [Migrating to 1.0](migrating-to-1.0.md) - the `recall` response shape changed
   in 1.0; this is the upgrade guide.
+- [Proposed Features](proposed-features.md) - feature ideas and improvements roadmap.
 
 ## Recipes
 

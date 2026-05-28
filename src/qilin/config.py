@@ -151,6 +151,34 @@ class Settings(BaseSettings):
             "from collections with ttl_seconds set."
         ),
     )
+    workspace_scoping_enabled: bool = Field(
+        default=True,
+        description=(
+            "When true, recall tools auto-scope results to the active workspace "
+            "when workspace folder metadata is available from the MCP client."
+        ),
+    )
+    workspace_scoping_mode: str = Field(
+        default="prefix_filter",
+        description=(
+            "Workspace scoping strategy: `prefix_filter`, `per_project_collection`, or "
+            "`hybrid`."
+        ),
+    )
+    workspace_use_project_collection: bool = Field(
+        default=False,
+        description=(
+            "Enable dynamic project-specific collection routing. In `hybrid` mode this "
+            "can be combined with source-prefix filtering."
+        ),
+    )
+    workspace_path_mappings: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Optional host/container path prefix mappings used to normalize workspace "
+            "and source paths before scoping."
+        ),
+    )
 
     recall_log_path: str | None = Field(
         default=None,

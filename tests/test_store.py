@@ -233,6 +233,22 @@ class TestBuildFilter:
         assert isinstance(flt, qm.Filter)
         assert flt.must_not is not None
 
+    def test_prefix_key_builds_should_match_text(self) -> None:
+        flt = _build_filter({"source__prefix": ["/repo/a", "/repo/b"]})
+        assert isinstance(flt, qm.Filter)
+        assert flt.should is not None
+        assert len(flt.should) == 2
+        assert isinstance(flt.should[0].match, qm.MatchText)
+
+    def test_prefix_object_builds_should_match_text(self) -> None:
+        flt = _build_filter({"__prefix__": {"source": "/repo/a"}})
+        assert isinstance(flt, qm.Filter)
+        assert flt.should is not None
+        assert len(flt.should) == 1
+        cond = flt.should[0]
+        assert cond.key == "source"
+        assert isinstance(cond.match, qm.MatchText)
+
 
 class TestVectorStore:
     @pytest.mark.asyncio

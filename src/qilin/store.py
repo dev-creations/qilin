@@ -71,12 +71,39 @@ def _build_filter(filter_obj: dict[str, Any] | None) -> qm.Filter | None:
     if "__raw__" in filter_obj:
         return qm.Filter(**filter_obj["__raw__"])
 
-    must: list[qm.FieldCondition] = []
+    must: list[Any] = []
+    should: list[qm.FieldCondition] = []
+
+    prefix_obj = filter_obj.get("__prefix__")
+    if isinstance(prefix_obj, dict):
+        for key, value in prefix_obj.items():
+            values = value if isinstance(value, list) else [value]
+            for item in values:
+                if isinstance(item, str) and item:
+                    should.append(
+                        qm.FieldCondition(key=key, match=qm.MatchText(text=item))
+                    )
+
     for key, value in filter_obj.items():
+        if key == "__prefix__":
+            continue
+        if key.endswith("__prefix"):
+            field = key[: -len("__prefix")]
+            values = value if isinstance(value, list) else [value]
+            for item in values:
+                if isinstance(item, str) and item:
+                    should.append(
+                        qm.FieldCondition(key=field, match=qm.MatchText(text=item))
+                    )
+            continue
         if isinstance(value, list):
             must.append(qm.FieldCondition(key=key, match=qm.MatchAny(any=value)))
         else:
             must.append(qm.FieldCondition(key=key, match=qm.MatchValue(value=value)))
+    if not must and not should:
+        return None
+    if should:
+        return qm.Filter(must=must, should=should)
     return qm.Filter(must=must)
 
 

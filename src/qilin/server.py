@@ -28,6 +28,11 @@ from .embeddings import get_embedder, shutdown_embedder
 from .reranker import shutdown_reranker
 from .sparse import shutdown_sparse
 from .store import get_store, shutdown_store
+from .workspace_scope import (
+    extract_workspace_folders_from_ctx,
+    reset_workspace_roots,
+    set_workspace_roots,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +55,7 @@ def _build_mcp() -> FastMCP:
         metadata: dict[str, Any] | None = None,
         source: str | None = None,
         language: str | None = None,
+        ctx: Any | None = None,
     ) -> dict[str, Any]:
         """Store text in vector memory. Long inputs are chunked automatically.
 
@@ -64,13 +70,19 @@ def _build_mcp() -> FastMCP:
                 Qilin chunks on AST boundaries and indexes ``defines`` per
                 chunk so ``recall(filter={"defines": "MyClass"})`` works.
         """
-        return await tools.remember(
-            text=text,
-            collection=collection,
-            metadata=metadata,
-            source=source,
-            language=language,
-        )
+        roots = extract_workspace_folders_from_ctx(ctx)
+        token = set_workspace_roots(roots)
+        try:
+            return await tools.remember(
+                text=text,
+                collection=collection,
+                metadata=metadata,
+                source=source,
+                language=language,
+                workspace_roots=roots,
+            )
+        finally:
+            reset_workspace_roots(token)
 
     @mcp.tool()
     async def recall(
@@ -85,6 +97,7 @@ def _build_mcp() -> FastMCP:
         mode: str | None = None,
         rerank: bool | None = None,
         rerank_top_k: int | None = None,
+        ctx: Any | None = None,
     ) -> list[dict[str, Any]]:
         """Search vector memory for chunks most relevant to a natural-language query.
 
@@ -113,19 +126,25 @@ def _build_mcp() -> FastMCP:
                 a cross-encoder reranker over the candidate pool.
             rerank_top_k: Candidate pool size fed to the reranker.
         """
-        return await tools.recall(
-            query=query,
-            collection=collection,
-            top_k=top_k,
-            filter=filter,
-            score_threshold=score_threshold,
-            context_window=context_window,
-            group_by_source=group_by_source,
-            mmr_lambda=mmr_lambda,
-            mode=mode,
-            rerank=rerank,
-            rerank_top_k=rerank_top_k,
-        )
+        roots = extract_workspace_folders_from_ctx(ctx)
+        token = set_workspace_roots(roots)
+        try:
+            return await tools.recall(
+                query=query,
+                collection=collection,
+                top_k=top_k,
+                filter=filter,
+                score_threshold=score_threshold,
+                context_window=context_window,
+                group_by_source=group_by_source,
+                mmr_lambda=mmr_lambda,
+                mode=mode,
+                rerank=rerank,
+                rerank_top_k=rerank_top_k,
+                workspace_roots=roots,
+            )
+        finally:
+            reset_workspace_roots(token)
 
     @mcp.tool()
     async def recall_files(
@@ -136,6 +155,7 @@ def _build_mcp() -> FastMCP:
         score_threshold: float | None = None,
         mode: str | None = None,
         rerank: bool | None = None,
+        ctx: Any | None = None,
     ) -> list[dict[str, Any]]:
         """Return the top-K source *files* relevant to a query.
 
@@ -146,15 +166,21 @@ def _build_mcp() -> FastMCP:
         ``language``. Far cheaper for an LLM than asking it to dedupe a
         chunk-level recall response itself.
         """
-        return await tools.recall_files(
-            query=query,
-            collection=collection,
-            top_k=top_k,
-            filter=filter,
-            score_threshold=score_threshold,
-            mode=mode,
-            rerank=rerank,
-        )
+        roots = extract_workspace_folders_from_ctx(ctx)
+        token = set_workspace_roots(roots)
+        try:
+            return await tools.recall_files(
+                query=query,
+                collection=collection,
+                top_k=top_k,
+                filter=filter,
+                score_threshold=score_threshold,
+                mode=mode,
+                rerank=rerank,
+                workspace_roots=roots,
+            )
+        finally:
+            reset_workspace_roots(token)
 
     @mcp.tool()
     async def forget(

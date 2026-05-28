@@ -385,3 +385,59 @@ class TestRecallFeedbackBoost:
         assert out[0]["id"] == "up"
         assert out[0]["score"] > 0.5
         assert out[0]["score"] > out[1]["score"]
+
+
+class TestWorkspaceScoping:
+    @pytest.mark.asyncio
+    async def test_recall_filters_hits_by_workspace_roots(
+        self, fake_embedder, fake_store, mocker
+    ) -> None:
+        from qilin.config import get_settings
+
+        settings = get_settings()
+        mocker.patch.object(settings, "recall_log_path", "")
+        mocker.patch.object(settings, "workspace_scoping_enabled", True)
+        mocker.patch.object(settings, "workspace_scoping_mode", "prefix_filter")
+
+        fake_embedder.embed.return_value = [[0.1, 0.2, 0.3]]
+        fake_store.search.return_value = [
+            SearchHit(
+                id="in",
+                score=0.9,
+                text="in scope",
+                payload={"text": "in scope", "source": "/repo/a.py"},
+            ),
+            SearchHit(
+                id="out",
+                score=0.95,
+                text="out scope",
+                payload={"text": "out scope", "source": "/other/b.py"},
+            ),
+        ]
+
+        out = await tools.recall(
+            query="q",
+            top_k=2,
+            workspace_roots=["/repo"],
+        )
+        assert [h["id"] for h in out] == ["in"]
+
+    @pytest.mark.asyncio
+    async def test_recall_uses_project_collection_in_hybrid_when_enabled(
+        self, fake_embedder, fake_store, mocker
+    ) -> None:
+        from qilin.config import get_settings
+
+        settings = get_settings()
+        mocker.patch.object(settings, "recall_log_path", "")
+        mocker.patch.object(settings, "workspace_scoping_enabled", True)
+        mocker.patch.object(settings, "workspace_scoping_mode", "hybrid")
+        mocker.patch.object(settings, "workspace_use_project_collection", True)
+
+        fake_embedder.embed.return_value = [[0.1, 0.2, 0.3]]
+        fake_store.search.return_value = []
+
+        await tools.recall(query="q", workspace_roots=["/repo"])
+
+        called_collection = fake_store.search.await_args.kwargs["collection"]
+        assert called_collection.startswith("memory-project-")
