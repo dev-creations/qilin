@@ -19,6 +19,7 @@ import asyncio
 import logging
 import subprocess
 from collections.abc import Iterable
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
@@ -960,10 +961,8 @@ def _write_hook_script(hook_path: Path, command: str) -> None:
         spacer = "\n" if existing and not existing.endswith("\n") else ""
         new_content = f"{prefix}{existing}{spacer}{block}"
     hook_path.write_text(new_content, encoding="utf-8")
-    try:
+    with suppress(OSError):
         hook_path.chmod(0o755)
-    except OSError:
-        pass
 
 
 @app.command("install-git-hooks")

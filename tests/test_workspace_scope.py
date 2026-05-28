@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from qilin.config import Settings
 from qilin.workspace_scope import (
-    branch_collection_name,
     apply_path_mappings,
+    branch_collection_name,
     extract_workspace_folders_from_ctx,
     normalize_source,
     normalize_workspace_roots,

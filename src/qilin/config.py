@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import BaseModel, Field
-from pydantic import field_validator
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 

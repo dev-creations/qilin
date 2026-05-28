@@ -24,10 +24,14 @@ def _normalize_path(path: str) -> str:
     parsed = urlparse(raw)
     if parsed.scheme == "file":
         candidate = unquote(parsed.path or "")
-        if os.name == "nt" and candidate.startswith("/") and len(candidate) > 2:
+        if (
+            os.name == "nt"
+            and candidate.startswith("/")
+            and len(candidate) > 2
+            and candidate[2] == ":"
+        ):
             # file:///C:/repo -> C:/repo
-            if candidate[2] == ":":
-                candidate = candidate[1:]
+            candidate = candidate[1:]
     else:
         candidate = raw
     candidate = candidate.replace("\\", "/")

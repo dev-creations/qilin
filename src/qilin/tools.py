@@ -20,8 +20,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from . import analytics
-from .code_chunking import chunk_code
 from .chunking import Chunk
+from .code_chunking import chunk_code
 from .config import get_settings
 from .embeddings import EmbedTask, get_embedder
 from .reranker import get_reranker
@@ -703,7 +703,7 @@ async def recall(
 
     merged: list[SearchHit] = []
     dedup_ids: set[str] = set()
-    for idx, (target_collection, found_hits) in enumerate(per_collection_hits):
+    for found_hits in (hits for _, hits in per_collection_hits):
         ordered_hits = sorted(found_hits, key=lambda h: h.score, reverse=True)
         for hit in ordered_hits:
             if hit.id in dedup_ids:
