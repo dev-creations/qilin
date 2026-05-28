@@ -704,8 +704,7 @@ async def recall(
     merged: list[SearchHit] = []
     dedup_ids: set[str] = set()
     for found_hits in (hits for _, hits in per_collection_hits):
-        ordered_hits = sorted(found_hits, key=lambda h: h.score, reverse=True)
-        for hit in ordered_hits:
+        for hit in found_hits:
             if hit.id in dedup_ids:
                 continue
             dedup_ids.add(hit.id)
