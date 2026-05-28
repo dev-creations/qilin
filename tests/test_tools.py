@@ -81,6 +81,31 @@ class TestRemember:
 
         assert result["collection"] == "memory"
 
+    @pytest.mark.asyncio
+    async def test_hierarchical_mode_writes_parent_and_child_chunks(
+        self, fake_embedder, fake_store, mocker
+    ) -> None:
+        settings = tools.get_settings()
+        mocker.patch.object(settings, "parent_child_enabled", True)
+        mocker.patch.object(settings, "parent_chunk_size_tokens", 500)
+        mocker.patch.object(settings, "parent_chunk_overlap_tokens", 50)
+        mocker.patch.object(settings, "child_chunk_size_tokens", 128)
+        mocker.patch.object(settings, "child_chunk_overlap_tokens", 16)
+
+        fake_embedder.embed.side_effect = [
+            [[0.1, 0.2, 0.3]],
+            [[0.2, 0.3, 0.4]],
+        ]
+        fake_store.upsert_chunks.return_value = 2
+
+        result = await tools.remember(text="Short text fits in one chunk.")
+        assert result["parent_chunks_written"] == 1
+        assert result["child_chunks_written"] == 1
+
+        payloads = fake_store.upsert_chunks.await_args.args[2]
+        assert any(p.get("is_parent") is True for p in payloads)
+        assert any(p.get("is_child") is True for p in payloads)
+
 
 class TestRecall:
     @pytest.mark.asyncio
@@ -210,6 +235,46 @@ class TestRecall:
         hits = await tools.recall(query="q")
 
         assert "extra_metadata" not in hits[0]
+
+    @pytest.mark.asyncio
+    async def test_hierarchical_recall_promotes_child_hits_to_parent_payload(
+        self, fake_embedder, fake_store, mocker
+    ) -> None:
+        settings = tools.get_settings()
+        mocker.patch.object(settings, "parent_child_enabled", True)
+        mocker.patch.object(settings, "recall_log_path", "")
+
+        fake_embedder.embed.return_value = [[0.1, 0.2, 0.3]]
+        fake_store.search.return_value = [
+            SearchHit(
+                id="child-1",
+                score=0.95,
+                text="child text",
+                payload={
+                    "text": "child text",
+                    "source": "/repo/a.py",
+                    "is_child": True,
+                    "parent_id": "parent-1",
+                    "child_ordinal": 2,
+                },
+            )
+        ]
+        fake_store.fetch_payloads_by_ids.return_value = {
+            "parent-1": {
+                "text": "def parent_context(): pass",
+                "source": "/repo/a.py",
+                "is_parent": True,
+                "parent_id": "parent-1",
+                "start_line": 10,
+                "end_line": 20,
+            }
+        }
+
+        hits = await tools.recall(query="parent", top_k=1)
+        assert len(hits) == 1
+        assert hits[0]["id"] == "parent-1"
+        assert hits[0]["text"] == "def parent_context(): pass"
+        assert hits[0]["is_parent"] is True
 
 
 class TestForget:

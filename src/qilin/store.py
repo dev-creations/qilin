@@ -48,14 +48,27 @@ def _content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def deterministic_point_id(source: str | None, document_hash: str, ordinal: int) -> str:
+def deterministic_point_id(
+    source: str | None,
+    document_hash: str,
+    ordinal: int,
+    *,
+    point_kind: str = "chunk",
+    parent_ordinal: int | None = None,
+) -> str:
     """Stable UUID derived from source + document hash + ordinal.
 
     Re-ingesting the same text under the same ``source`` is idempotent: the
     upsert overwrites prior points with the same id rather than duplicating
     them.
     """
-    seed = f"{source or ''}::{document_hash}::{ordinal}"
+    if parent_ordinal is None:
+        seed = f"{source or ''}::{document_hash}::{point_kind}::{ordinal}"
+    else:
+        seed = (
+            f"{source or ''}::{document_hash}::{point_kind}::"
+            f"{parent_ordinal}::{ordinal}"
+        )
     return str(uuid.uuid5(POINT_ID_NAMESPACE, seed))
 
 
@@ -191,6 +204,21 @@ class VectorStore:
                     collection_name=name,
                     field_name="language",
                     field_schema=qm.PayloadSchemaType.KEYWORD,
+                )
+                await self._client.create_payload_index(
+                    collection_name=name,
+                    field_name="parent_id",
+                    field_schema=qm.PayloadSchemaType.KEYWORD,
+                )
+                await self._client.create_payload_index(
+                    collection_name=name,
+                    field_name="is_parent",
+                    field_schema=qm.PayloadSchemaType.BOOL,
+                )
+                await self._client.create_payload_index(
+                    collection_name=name,
+                    field_name="is_child",
+                    field_schema=qm.PayloadSchemaType.BOOL,
                 )
             self._ensured.add(name)
 
@@ -416,6 +444,27 @@ class VectorStore:
         )
         return before
 
+    async def fetch_payloads_by_ids(
+        self, collection: str, ids: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        if not ids:
+            return {}
+        try:
+            records = await self._client.retrieve(
+                collection_name=collection,
+                ids=ids,
+                with_payload=True,
+                with_vectors=False,
+            )
+        except UnexpectedResponse as exc:
+            if exc.status_code == 404:
+                return {}
+            raise
+        out: dict[str, dict[str, Any]] = {}
+        for record in records:
+            out[str(record.id)] = record.payload or {}
+        return out
+
     async def count(
         self,
         collection: str,
@@ -637,6 +686,7 @@ def build_payload(
     imports: tuple[str, ...] | list[str] | None = None,
     signature: str | None = None,
     language: str | None = None,
+    hierarchy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Compose the Qdrant payload stored alongside each chunk vector.
 
@@ -669,6 +719,11 @@ def build_payload(
         payload["signature"] = signature
     if language:
         payload["language"] = language
+    if hierarchy:
+        for key, value in hierarchy.items():
+            if key in payload:
+                continue
+            payload[key] = value
     if extra:
         for key, value in extra.items():
             if key in payload:

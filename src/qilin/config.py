@@ -31,6 +31,30 @@ class CollectionOverride(BaseModel):
             "expired chunks. Useful for scratch / session memory."
         ),
     )
+    parent_child_enabled: bool | None = Field(
+        default=None,
+        description="Enable parent-child hierarchical chunking for this collection.",
+    )
+    parent_chunk_size_tokens: int | None = Field(
+        default=None,
+        ge=32,
+        description="Parent chunk token size used when parent-child chunking is enabled.",
+    )
+    parent_chunk_overlap_tokens: int | None = Field(
+        default=None,
+        ge=0,
+        description="Parent chunk overlap used when parent-child chunking is enabled.",
+    )
+    child_chunk_size_tokens: int | None = Field(
+        default=None,
+        ge=32,
+        description="Child chunk token size used when parent-child chunking is enabled.",
+    )
+    child_chunk_overlap_tokens: int | None = Field(
+        default=None,
+        ge=0,
+        description="Child chunk overlap used when parent-child chunking is enabled.",
+    )
 
 
 class Settings(BaseSettings):
@@ -77,6 +101,33 @@ class Settings(BaseSettings):
         default=50,
         ge=0,
         description="Token overlap between consecutive chunks to preserve context across boundaries.",
+    )
+    parent_child_enabled: bool = Field(
+        default=False,
+        description=(
+            "When True, remember stores hierarchical parent+child chunks, recall "
+            "searches children and returns parent context."
+        ),
+    )
+    parent_chunk_size_tokens: int = Field(
+        default=900,
+        ge=32,
+        description="Target token size for parent chunks in hierarchical mode.",
+    )
+    parent_chunk_overlap_tokens: int = Field(
+        default=100,
+        ge=0,
+        description="Token overlap between parent chunks in hierarchical mode.",
+    )
+    child_chunk_size_tokens: int = Field(
+        default=180,
+        ge=32,
+        description="Target token size for child chunks in hierarchical mode.",
+    )
+    child_chunk_overlap_tokens: int = Field(
+        default=30,
+        ge=0,
+        description="Token overlap between child chunks in hierarchical mode.",
     )
     embed_batch_size: int = Field(
         default=16,
@@ -204,6 +255,16 @@ class Settings(BaseSettings):
             patch["chunk_size_tokens"] = override.chunk_size_tokens
         if override.chunk_overlap_tokens is not None:
             patch["chunk_overlap_tokens"] = override.chunk_overlap_tokens
+        if override.parent_child_enabled is not None:
+            patch["parent_child_enabled"] = override.parent_child_enabled
+        if override.parent_chunk_size_tokens is not None:
+            patch["parent_chunk_size_tokens"] = override.parent_chunk_size_tokens
+        if override.parent_chunk_overlap_tokens is not None:
+            patch["parent_chunk_overlap_tokens"] = override.parent_chunk_overlap_tokens
+        if override.child_chunk_size_tokens is not None:
+            patch["child_chunk_size_tokens"] = override.child_chunk_size_tokens
+        if override.child_chunk_overlap_tokens is not None:
+            patch["child_chunk_overlap_tokens"] = override.child_chunk_overlap_tokens
         if not patch:
             return self
         return self.model_copy(update=patch)

@@ -21,6 +21,7 @@ from typing import Any
 
 from . import analytics
 from .code_chunking import chunk_code
+from .chunking import Chunk
 from .config import get_settings
 from .embeddings import EmbedTask, get_embedder
 from .reranker import get_reranker
@@ -53,6 +54,11 @@ _FIRST_CLASS_KEYS: frozenset[str] = frozenset(
         "defines",
         "imports",
         "signature",
+        "is_parent",
+        "is_child",
+        "parent_id",
+        "parent_ordinal",
+        "child_ordinal",
     }
 )
 
@@ -147,13 +153,14 @@ async def remember(
     store = await get_store()
 
     document_hash = _content_hash(text)
-    chunk_texts = [c.text for c in chunks]
-    vectors = await embedder.embed(chunk_texts, task=EmbedTask.DOCUMENT)
-
-    sparse_vectors = None
-    if get_settings().hybrid_enabled:
-        sparse_embedder = await get_sparse_embedder()
-        sparse_vectors = sparse_embedder.embed(chunk_texts)
+    hierarchical = bool(coll_settings.parent_child_enabled)
+    parent_chunks: list[Chunk] = []
+    child_chunks: list[Chunk] = []
+    parent_ids: list[str] = []
+    child_ids: list[str] = []
+    payloads: list[dict[str, Any]] = []
+    vectors: list[list[float]] = []
+    ids: list[str] = []
 
     ttl_seconds = None
     override = get_settings().collections.get(collection_name)
@@ -165,30 +172,152 @@ async def remember(
         else None
     )
 
-    ids: list[str] = []
-    payloads: list[dict[str, Any]] = []
-    for chunk in chunks:
-        point_id = deterministic_point_id(source, document_hash, chunk.ordinal)
-        ids.append(point_id)
-        chunk_extra = dict(metadata) if metadata else {}
-        if expires_at is not None:
-            chunk_extra["expires_at"] = expires_at
-        payloads.append(
-            build_payload(
-                chunk_text=chunk.text,
-                chunk_ordinal=chunk.ordinal,
-                chunk_count=len(chunks),
-                document_hash=document_hash,
-                source=source,
-                extra=chunk_extra or None,
-                start_line=chunk.start_line,
-                end_line=chunk.end_line,
-                defines=chunk.defines or None,
-                imports=chunk.imports or None,
-                signature=chunk.signature,
-                language=language,
-            )
+    if hierarchical:
+        parent_chunks = chunk_code(
+            text,
+            language,
+            chunk_size_tokens=coll_settings.parent_chunk_size_tokens,
+            chunk_overlap_tokens=coll_settings.parent_chunk_overlap_tokens,
+            settings=coll_settings,
         )
+        child_triplets: list[tuple[str, int, Chunk]] = []
+        for parent in parent_chunks:
+            parent_id = deterministic_point_id(
+                source,
+                document_hash,
+                parent.ordinal,
+                point_kind="parent",
+            )
+            parent_ids.append(parent_id)
+            local_children = chunk_code(
+                parent.text,
+                language,
+                chunk_size_tokens=coll_settings.child_chunk_size_tokens,
+                chunk_overlap_tokens=coll_settings.child_chunk_overlap_tokens,
+                settings=coll_settings,
+            )
+            for local_child in local_children:
+                adjusted_child = Chunk(
+                    text=local_child.text,
+                    ordinal=len(child_chunks),
+                    token_count=local_child.token_count,
+                    start_line=parent.start_line + local_child.start_line - 1,
+                    end_line=parent.start_line + local_child.end_line - 1,
+                    defines=local_child.defines,
+                    imports=local_child.imports,
+                    signature=local_child.signature,
+                )
+                child_chunks.append(adjusted_child)
+                child_triplets.append((parent_id, parent.ordinal, local_child))
+
+        parent_vectors = await embedder.embed(
+            [chunk.text for chunk in parent_chunks], task=EmbedTask.DOCUMENT
+        )
+        child_vectors = await embedder.embed(
+            [chunk.text for chunk in child_chunks], task=EmbedTask.DOCUMENT
+        )
+        vectors.extend(parent_vectors)
+        vectors.extend(child_vectors)
+
+        for parent in parent_chunks:
+            point_id = deterministic_point_id(
+                source,
+                document_hash,
+                parent.ordinal,
+                point_kind="parent",
+            )
+            ids.append(point_id)
+            chunk_extra = dict(metadata) if metadata else {}
+            if expires_at is not None:
+                chunk_extra["expires_at"] = expires_at
+            payloads.append(
+                build_payload(
+                    chunk_text=parent.text,
+                    chunk_ordinal=parent.ordinal,
+                    chunk_count=len(parent_chunks),
+                    document_hash=document_hash,
+                    source=source,
+                    extra=chunk_extra or None,
+                    start_line=parent.start_line,
+                    end_line=parent.end_line,
+                    defines=parent.defines or None,
+                    imports=parent.imports or None,
+                    signature=parent.signature,
+                    language=language,
+                    hierarchy={
+                        "is_parent": True,
+                        "is_child": False,
+                        "parent_id": point_id,
+                        "parent_ordinal": parent.ordinal,
+                    },
+                )
+            )
+        for parent_id, parent_ordinal, child in child_triplets:
+            point_id = deterministic_point_id(
+                source,
+                document_hash,
+                child.ordinal,
+                point_kind="child",
+                parent_ordinal=parent_ordinal,
+            )
+            child_ids.append(point_id)
+            ids.append(point_id)
+            chunk_extra = dict(metadata) if metadata else {}
+            if expires_at is not None:
+                chunk_extra["expires_at"] = expires_at
+            payloads.append(
+                build_payload(
+                    chunk_text=child.text,
+                    chunk_ordinal=child.ordinal,
+                    chunk_count=len(child_chunks),
+                    document_hash=document_hash,
+                    source=source,
+                    extra=chunk_extra or None,
+                    start_line=child.start_line,
+                    end_line=child.end_line,
+                    defines=child.defines or None,
+                    imports=child.imports or None,
+                    signature=child.signature,
+                    language=language,
+                    hierarchy={
+                        "is_parent": False,
+                        "is_child": True,
+                        "parent_id": parent_id,
+                        "child_ordinal": child.ordinal,
+                        "parent_ordinal": parent_ordinal,
+                    },
+                )
+            )
+    else:
+        chunk_texts = [c.text for c in chunks]
+        vectors = await embedder.embed(chunk_texts, task=EmbedTask.DOCUMENT)
+        for chunk in chunks:
+            point_id = deterministic_point_id(source, document_hash, chunk.ordinal)
+            ids.append(point_id)
+            chunk_extra = dict(metadata) if metadata else {}
+            if expires_at is not None:
+                chunk_extra["expires_at"] = expires_at
+            payloads.append(
+                build_payload(
+                    chunk_text=chunk.text,
+                    chunk_ordinal=chunk.ordinal,
+                    chunk_count=len(chunks),
+                    document_hash=document_hash,
+                    source=source,
+                    extra=chunk_extra or None,
+                    start_line=chunk.start_line,
+                    end_line=chunk.end_line,
+                    defines=chunk.defines or None,
+                    imports=chunk.imports or None,
+                    signature=chunk.signature,
+                    language=language,
+                )
+            )
+
+    sparse_vectors = None
+    if get_settings().hybrid_enabled:
+        sparse_embedder = await get_sparse_embedder()
+        sparse_vectors = sparse_embedder.embed([p["text"] for p in payloads])
 
     written = await store.upsert_chunks(
         collection_name, vectors, payloads, ids, sparse_vectors=sparse_vectors
@@ -204,7 +333,55 @@ async def remember(
         "chunks_written": written,
         "ids": ids,
         "document_hash": document_hash,
+        "parent_chunks_written": len(parent_chunks),
+        "child_chunks_written": len(child_ids) if hierarchical else len(ids),
     }
+
+
+async def _promote_child_hits_to_parents(
+    store: VectorStore,
+    collection_name: str,
+    hits: list[SearchHit],
+    top_k: int,
+) -> list[SearchHit]:
+    if not hits:
+        return []
+    best_by_parent: dict[str, SearchHit] = {}
+    ordered_parent_ids: list[str] = []
+    for hit in hits:
+        parent_id = hit.payload.get("parent_id")
+        if not isinstance(parent_id, str) or not parent_id:
+            continue
+        current = best_by_parent.get(parent_id)
+        if current is None:
+            best_by_parent[parent_id] = hit
+            ordered_parent_ids.append(parent_id)
+            continue
+        if hit.score > current.score:
+            best_by_parent[parent_id] = hit
+    parent_payloads = await store.fetch_payloads_by_ids(collection_name, ordered_parent_ids)
+    promoted: list[SearchHit] = []
+    for parent_id in ordered_parent_ids:
+        child = best_by_parent[parent_id]
+        parent_payload = parent_payloads.get(parent_id)
+        if not parent_payload:
+            continue
+        payload = dict(parent_payload)
+        payload["matched_child_id"] = child.id
+        if isinstance(child.payload.get("child_ordinal"), int):
+            payload["matched_child_ordinal"] = child.payload["child_ordinal"]
+        promoted.append(
+            SearchHit(
+                id=parent_id,
+                score=child.score,
+                text=payload.get("text", ""),
+                payload=payload,
+                vector=None,
+            )
+        )
+        if len(promoted) >= top_k:
+            break
+    return promoted
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -486,7 +663,11 @@ async def recall(
         collection=collection_name,
         vector=vectors[0],
         top_k=internal_k,
-        filter_obj=filter,
+        filter_obj=(
+            {"is_child": True, **(filter or {})}
+            if settings.for_collection(collection_name).parent_child_enabled
+            else filter
+        ),
         score_threshold=score_threshold,
         with_vectors=need_vectors,
         mode=effective_mode,
@@ -508,11 +689,14 @@ async def recall(
                 h.payload.get("source"), scope.workspace_roots
             )
         ]
-    hits = hits[:top_k]
+    if settings.for_collection(collection_name).parent_child_enabled:
+        hits = await _promote_child_hits_to_parents(store, collection_name, hits, top_k)
+    else:
+        hits = hits[:top_k]
 
     formatted = [_format_hit(h.id, h.score, h.payload) for h in hits]
 
-    if context_window > 0:
+    if context_window > 0 and not settings.for_collection(collection_name).parent_child_enabled:
         formatted = await _expand_neighbors(
             store, collection_name, formatted, context_window
         )

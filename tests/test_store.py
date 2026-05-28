@@ -54,6 +54,20 @@ class TestPureHelpers:
         b = deterministic_point_id("src.txt", "abc", 1)
         assert a != b
 
+    def test_deterministic_point_id_differs_for_point_kind(self) -> None:
+        parent = deterministic_point_id("src.txt", "abc", 0, point_kind="parent")
+        child = deterministic_point_id("src.txt", "abc", 0, point_kind="child")
+        assert parent != child
+
+    def test_deterministic_point_id_differs_for_parent_ordinal(self) -> None:
+        a = deterministic_point_id(
+            "src.txt", "abc", 0, point_kind="child", parent_ordinal=1
+        )
+        b = deterministic_point_id(
+            "src.txt", "abc", 0, point_kind="child", parent_ordinal=2
+        )
+        assert a != b
+
     def test_deterministic_point_id_differs_for_source(self) -> None:
         a = deterministic_point_id("a.txt", "abc", 0)
         b = deterministic_point_id("b.txt", "abc", 0)
@@ -176,6 +190,19 @@ class TestBuildPayload:
         assert "signature" not in payload
         assert "language" not in payload
 
+    def test_writes_hierarchy_fields(self) -> None:
+        payload = build_payload(
+            chunk_text="t",
+            chunk_ordinal=0,
+            chunk_count=1,
+            document_hash="abc",
+            source="x.py",
+            extra=None,
+            hierarchy={"is_parent": True, "parent_id": "pid"},
+        )
+        assert payload["is_parent"] is True
+        assert payload["parent_id"] == "pid"
+
     def test_extra_does_not_overwrite_language(self) -> None:
         payload = build_payload(
             chunk_text="t",
@@ -261,8 +288,8 @@ class TestVectorStore:
         await store.ensure_collection("coll")
 
         assert client.create_collection.await_count == 1
-        # source, document_hash, defines, language => 4 payload indexes
-        assert client.create_payload_index.await_count == 4
+        # source, document_hash, defines, language, parent_id, is_parent, is_child => 7
+        assert client.create_payload_index.await_count == 7
 
     @pytest.mark.asyncio
     async def test_ensure_collection_skips_create_when_exists(self, mock_async_client) -> None:
@@ -445,6 +472,17 @@ class TestVectorStore:
 
         with pytest.raises(ValueError):
             await store.delete("c", filter_obj={})
+
+    @pytest.mark.asyncio
+    async def test_fetch_payloads_by_ids(self, mock_async_client) -> None:
+        client, _ = mock_async_client
+        client.retrieve.return_value = [
+            SimpleNamespace(id="a", payload={"text": "A"}),
+            SimpleNamespace(id="b", payload={"text": "B"}),
+        ]
+        store = VectorStore()
+        out = await store.fetch_payloads_by_ids("c", ["a", "b"])
+        assert out == {"a": {"text": "A"}, "b": {"text": "B"}}
 
     @pytest.mark.asyncio
     async def test_count_returns_int(self, mock_async_client) -> None:

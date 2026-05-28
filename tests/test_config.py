@@ -19,6 +19,9 @@ def test_defaults_match_documented_values() -> None:
     assert s.default_collection == "memory"
     assert s.chunk_size_tokens == 450
     assert s.chunk_overlap_tokens == 50
+    assert s.parent_child_enabled is False
+    assert s.parent_chunk_size_tokens == 900
+    assert s.child_chunk_size_tokens == 180
     assert s.embed_batch_size == 16
     assert s.mcp_host == "0.0.0.0"
     assert s.mcp_port == 8443
